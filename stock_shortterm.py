@@ -655,6 +655,14 @@ def main():
         stock_name = quote.get("name", name) or code
 
         sig = sss.score_all(row)
+        if sig and temp < 30:
+            sig["score"] = int(sig["score"] * 0.5)
+            if sig["score"] < 40:
+                sig = None
+        if sig and pd.notna(row.get("atr", 0)) and row["atr"] < 3:
+            sig["score"] = int(sig["score"] * 0.6)
+            if sig["score"] < 40:
+                sig = None
         if sig:
             # 获取自学习历史
             stats = sle.get_stock_stats(code)
@@ -665,6 +673,7 @@ def main():
             elif stats["wr"] <= 40:
                 final_score = int(final_score * 0.8)
             final_score = min(100, final_score)
+            sig["score"] = final_score
 
             signals.append({
                 "code": code, "name": stock_name, "sector": sector,
@@ -676,13 +685,13 @@ def main():
                 "dd": float(row["dd"]) if pd.notna(row.get("dd", 0)) else 0,
                 "stats": stats,
             })
-            # 记录到自学习
             sle.record_signal(code, stock_name, sig, row)
 
         if not args.quiet and sig:
             stats_tag = f" 历史{stats['wr']:.0f}%" if stats["total"] >= 3 else ""
             print(f"  [{i+1}/{len(stock_list)}] ⚡ {sig['type']} {stock_name}({code}) {sig['score']}分 {sig['confident']}{stats_tag}")
 
+        time.sleep(0.08)
         time.sleep(0.08)
 
     # ── 排序 ──
