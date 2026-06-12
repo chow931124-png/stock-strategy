@@ -821,73 +821,135 @@ class StockScorer:
         if row['bias_ma20'] >= cfg['bias_ma20_max']: return False
         return True
 
-    def calc_surge_potential(self, row: pd.Series, sector_score: int) -> int:
+    def calc_surge_potential(self, row: pd.Series, sector_score: int, hot_tags: dict = None) -> dict:
         """
-        大涨潜力评分（0-100）—— 涨停/大涨5%+的概率估算
-        因子：
-        - 量比 (放量程度) 25% — 资金关注度
-        - ATR (弹性) 25% — 能涨多猛
-        - 板块热度 20% — 热点板块容易出涨停
-        - 回撤修复形态 15% — 深跌反弹力度
-        - 当日涨幅 15% — 已经在涨了
+        涨停质量分析（专家版）
+        三级分类: 🟢高质量板 / 🟡中质量板 / 🔴低质量板
+        专家共识: 烂板识别比好板识别更有价值
         """
-        score = 0
-
-        # ① 量比评分（0-25）
+        score = 0; reasons = []; risks = []; bad_board = []
+        code = row.get('stock_code', '')
         vr = row['vol_ratio_20']
-        if pd.notna(vr):
-            if vr >= 3.0: score += 25
-            elif vr >= 2.5: score += 22
-            elif vr >= 2.0: score += 18
-            elif vr >= 1.5: score += 12
-            elif vr >= 1.0: score += 8
-            else: score += 3
-
-        # ② ATR弹性评分（0-25）
-        atr = row['atr_ratio']
-        if pd.notna(atr):
-            if atr >= 8: score += 25
-            elif atr >= 6: score += 20
-            elif atr >= 5: score += 16
-            elif atr >= 4: score += 12
-            elif atr >= 3: score += 8
-            else: score += 3
-
-        # ③ 板块热度评分（0-20）
-        if sector_score >= 80: score += 20
-        elif sector_score >= 70: score += 16
-        elif sector_score >= 60: score += 12
-        elif sector_score >= 50: score += 8
-        else: score += 4
-
-        # ④ 回撤修复形态（0-15）深跌后放量反弹=强信号
-        dd = row['drawdown']
-        if pd.notna(dd):
-            dd_depth = abs(dd)
-            if dd_depth >= 25 and pd.notna(vr) and vr >= 2.0:
-                score += 15  # 深跌+巨量=最强反弹信号
-            elif dd_depth >= 20:
-                score += 12
-            elif dd_depth >= 15:
-                score += 9
-            elif dd_depth >= 10:
-                score += 6
-            else:
-                score += 3
-
-        # ⑤ 当日涨幅势头（0-15）
         chg = row['change_pct']
-        if pd.notna(chg):
-            if chg >= 5: score += 15  # 已经在拉
-            elif chg >= 3: score += 12
-            elif chg >= 1: score += 8
-            elif chg >= 0: score += 4
+        atr = row['atr_ratio']
+        dd = row['drawdown']
 
-        # 加权修正：如果量比极低，即使其他条件好也不容易涨停
-        if pd.notna(vr) and vr < 1.0:
-            score = int(score * 0.6)
+        # ── 🔴 烂板检测（优先级最高，一票否决权）──
+        # ① 偷鸡板检测：尾盘拉升+量比异常
+        #    （没有封板时间数据，用量比>2+涨幅<5%但没封死替代）
+        if pd.notna(vr) and pd.notna(chg):
+            if chg >= 7 and vr > 3:
+                # 封住了但分歧巨大
+                bad_board.append("分歧板⚠️")
+                risks.append("巨量分歧")
+                score -= 20
+            elif 3 <= chg < 7 and vr > 2.5:
+                # 拉了没封住，量还很大
+                bad_board.append("冲板回落🔴")
+                risks.append("冲高回落")
+                score -= 25
+            elif chg > 0 and vr < 0.5:
+                # 没量没涨幅
+                bad_board.append("僵尸板💀")
+        # ② 孤狼检测：单只涨停无板块联动
+        if pd.notna(chg) and chg >= 5:
+            # 用板块评分推断：板块<50是孤狼
+            if sector_score < 55:
+                bad_board.append("孤狼板🐺")
+                risks.append("无跟风")
+                score -= 15
 
-        return min(score, 100)
+        # ── 正常评分（有烂板标记时权重减半）──
+        weight = 0.5 if bad_board else 1.0
+
+        # ① 量价关系（0-15）
+        if pd.notna(vr):
+            if 1.0 <= vr <= 2.0:
+                score += 15; reasons.append("健康放量✅")
+            elif 2.0 < vr <= 3.0:
+                score += 10; reasons.append("明显放量")
+            elif vr > 3.0:
+                score += 5; reasons.append("巨量")
+            elif vr >= 0.6:
+                score += 8
+        # ② 弹性（0-15）
+        if pd.notna(atr):
+            if 5 <= atr <= 8:
+                score += 15; reasons.append("弹性好")
+            elif atr >= 8:
+                score += 12; reasons.append("高弹性")
+            elif atr >= 4:
+                score += 8
+        # ③ 题材热度（0-25）
+        tag_hotness = 0; tag_match = ""
+        if hot_tags and code in hot_tags:
+            tags = hot_tags[code].get("reason", "").split("+")
+            tc = sum(hot_tags.get("_count", {}).get(t.strip(), 0) for t in tags if t.strip())
+            tag_hotness = min(25, tc * 2)
+            tag_match = tags[0] if tags else ""
+            if tag_hotness >= 20: reasons.append("主线题材🔥")
+            elif tag_hotness >= 10: reasons.append("热门题材")
+        if tag_hotness == 0:
+            if sector_score >= 90: tag_hotness = 25; reasons.append("板块龙头🔥")
+            elif sector_score >= 80: tag_hotness = 20; reasons.append("板块强势")
+            elif sector_score >= 70: tag_hotness = 15
+            elif sector_score >= 60: tag_hotness = 10
+            else: tag_hotness = 5
+        score += tag_hotness
+        # ④ 板块地位（0-15）
+        if sector_score >= 90: score += 15; reasons.append("板块龙头")
+        elif sector_score >= 80: score += 12; reasons.append("板块核心")
+        elif sector_score >= 70: score += 8
+        elif sector_score >= 60: score += 5
+        # ⑤ 形态（0-15）
+        if pd.notna(dd):
+            d = abs(dd)
+            if d >= 15: score += 15; reasons.append("深跌反弹")
+            elif d >= 5: score += 8; reasons.append("回调企稳")
+        # ⑥ MACD辅助（0-15）
+        macd = row.get('macd', None); macd_sig = row.get('macd_signal', None)
+        if pd.notna(macd) and pd.notna(macd_sig):
+            if macd > 0 and macd > macd_sig: score += 15; reasons.append("MACD金叉")
+            elif macd > 0: score += 8
+
+        # 量比修正：缩量封板加分，放量封板减分
+        if pd.notna(vr) and pd.notna(chg):
+            if vr < 1.3 and chg >= 5: score += 10; reasons.append("缩量封板💎")  # 高手锁仓
+            if vr > 3 and chg >= 5: score -= 10; risks.append("放量分歧")  # 烂板
+
+        score = int(score * weight)
+        score = max(0, min(100, score))
+
+        # ── 三级分类 ──
+        if bad_board:
+            bbt = "|".join(bad_board[:2])
+            cls = f"🔴 低质量板({bbt})"
+        elif score >= 75:
+            cls = "🟢 高质量板"
+        elif score >= 50:
+            cls = "🟡 中质量板"
+        else:
+            cls = "🔴 低质量板(评分不足)"
+
+        # 持股建议
+        advice = ""
+        if "分歧板" in str(bad_board): advice = "次日不涨停就走"
+        elif "冲板回落" in str(bad_board): advice = "短线回避"
+        elif "孤狼板" in str(bad_board): advice = "不参与"
+        elif "缩量封板" in reasons: advice = "中线持有"
+        elif score >= 75: advice = "可持有观察"
+        elif score >= 50: advice = "等回调再入"
+        else: advice = "观望"
+
+        return {
+            "score": score,
+            "class": cls,
+            "reasons": "|".join(reasons[:4]) if reasons else "",
+            "risks": "|".join(risks[:2]) if risks else "",
+            "tag": tag_match,
+            "advice": advice,
+            "bad": "|".join(bad_board) if bad_board else "",
+        }
 
     def calc_ambush(self, row: pd.Series, sector_score: int) -> int:
         """🚀 埋伏评分0-100：横盘充分+均线粘合+量价异动"""
@@ -1065,7 +1127,7 @@ class StockScorer:
             "sector_score": sector_score,
             "composite": composite,
             "sector_weight": sector_weight,
-            "surge_score": self.calc_surge_potential(row, sector_score),
+            "surge_score": self.calc_surge_potential(row, sector_score, None),
             "ambush_score": self.calc_ambush(row, sector_score),
             "verify": self.verify_signal(row, sector_score),
             "kelly_pct": self.calc_kelly_position(row, tier_score),
@@ -1159,9 +1221,13 @@ class WeChatNotifier:
         surge_top = sorted(results, key=lambda r: -r.get('surge_score', 0))[:3]
         if surge_top and surge_top[0].get('surge_score', 0) >= 30:
             lines.append("")
-            lines.append("**🔥 涨停潜力榜**")
+            lines.append("**🔥 涨停质量**")
             for r in surge_top:
-                lines.append(f"> {r['name']}({r['code']}) 量比{r.get('vol_ratio',0):.1f}x 潜力{r.get('surge_score',0)}分")
+                s = r.get('surge_score', {})
+                sc = s.get('score', 0) if isinstance(s, dict) else s
+                cls = s.get('class', '') if isinstance(s, dict) else ''
+                bad = s.get('bad', '') if isinstance(s, dict) else ''
+                lines.append(f"> {r['name']}({r['code']}) {cls} {sc}分{' ❌'+bad if bad else ''}")
 
         # ── 埋伏信号榜 ──
         ambush_top = sorted(results, key=lambda r: -r.get('ambush_score', 0))[:3]
@@ -1626,7 +1692,7 @@ def main():
                 "tier_score": score_result["tier_score"],
                 "sector_score": sec_score,
                 "composite": score_result["composite"],
-                "surge_score": score_result.get("surge_score", 0),
+                "surge_score": score_result.get("surge_score", {"score": 0}),
                 "ambush_score": score_result.get("ambush_score", 0),
                 "gain_60d": row.get("gain_60d", 0),
                 "kelly_pct": score_result.get("kelly_pct", 0.15),
@@ -1752,16 +1818,28 @@ def main():
                       f"短线{r['short_score']}分 | {reasons}")
             print(f"  📌 放量突破+MACD金叉+板块共振，短线机会")
 
-        # ── 涨停潜力榜 ──
-        surge_top = sorted(results, key=lambda r: -r['surge_score'])[:3]
-        if surge_top and surge_top[0]['surge_score'] >= 30:
-            print(f"\n🔥 涨停潜力榜 TOP3（大涨概率估算）:")
+        # ── 涨停质量分析 TOP3 ──
+        surge_top = sorted(results, key=lambda r: -r.get('surge_score', {}).get('score', 0))[:3]
+        if surge_top and surge_top[0].get('surge_score', {}).get('score', 0) >= 30:
+            print(f"\n🔥 涨停质量分析 TOP3")
+            print(f"  评级: 🟢高质量板 | 🟡中质量板 | 🔴低质量板（烂板别碰）")
             for r in surge_top:
-                bar = "█" * (r['surge_score'] // 10) + "░" * (10 - r['surge_score'] // 10)
-                print(f"  {bar} {r['name']}({r['code']}) [{r['sector']}] "
-                      f"量比{r['vol_ratio']:.1f}x ATR{r['atr_ratio']:.1f}% "
-                      f"潜力{r['surge_score']}分")
-            print(f"  ⚠️ 仅供参考，涨停预测准确率有限")
+                s = r.get('surge_score', {})
+                sc = s.get('score', 0) if isinstance(s, dict) else s
+                bar = "█" * (sc // 10) + "░" * (10 - sc // 10)
+                cls = s.get('class', '') if isinstance(s, dict) else ''
+                adv = s.get('advice', '') if isinstance(s, dict) else ''
+                s_risks = s.get('risks', '') if isinstance(s, dict) else ''
+                s_tag = s.get('tag', '') if isinstance(s, dict) else ''
+                bad = s.get('bad', '') if isinstance(s, dict) else ''
+                tag_str = f" | {s_tag}" if s_tag else ""
+                risk_str = f" | ⚠️ {s_risks}" if s_risks else ""
+                bad_str = f" | ❌ {bad}" if bad else ""
+                print(f"  {bar} {r['name']}({r['code']}) [{r['sector']}]")
+                print(f"     {cls} {sc}分  量比{r['vol_ratio']:.1f}x ATR{r['atr_ratio']:.1f}%{tag_str}{bad_str}")
+                print(f"     {s.get('reasons','')}{risk_str}")
+                print(f"     💡 {adv}")
+            print(f"  ⚠️ 烂板识别比好板识别更重要—避开低质量板")
 
         # ── 埋伏信号榜 ──
         ambush_top = sorted(results, key=lambda r: -r.get('ambush_score', 0))[:3]
