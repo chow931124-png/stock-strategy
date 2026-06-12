@@ -6,6 +6,15 @@
 # 每天第一次自动装依赖
 pip install --no-cache-dir mootdx requests pandas numpy fake_useragent 2>/dev/null
 
+# 自动配置mootdx（容器重启后/root/.mootdx/会丢失）
+mkdir -p /root/.mootdx
+cat > /root/.mootdx/config.json << 'MCFG'
+{"SERVER":{"HQ":[["深圳","110.41.147.114",7709],["上海","124.70.176.52",7709]]},"BESTIP":{"HQ":["110.41.147.114",7709],"EX":"","GP":""}}
+MCFG
+
+# 清理K线缓存（每天自动换新的）
+rm -f /app/cache/klines_strategy/*.pkl 2>/dev/null
+
 while true; do
   H=$(date +%H:%M)
   case $H in
