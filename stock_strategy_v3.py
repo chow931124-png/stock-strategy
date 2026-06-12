@@ -46,7 +46,7 @@ NOTIFY_CONFIG = {
 STRATEGY = {
     "base": {"drawdown_min": 5, "drawdown_max": 35, "vol_ratio_min": 1.3, "ma_period": "ma5", "lookback_peak": 60},
     "enhanced": {"atr_min": 3.0, "atr_max": 999},
-    "elite": {"bias_ma20_max": -3, "atr_min": 3.0, "atr_max": 999},
+    "elite": {"bias_ma20_max": -2, "atr_min": 3.0, "atr_max": 999},
     "ambush": {
         "amplitude_min": 10, "amplitude_max": 30,
         "ma_spread_max": 15,
