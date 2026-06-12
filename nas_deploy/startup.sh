@@ -3,6 +3,9 @@
 # 放在 nas_deploy/ 目录，挂载到容器内 /app/startup.sh
 # Docker 命令: sh /app/startup.sh
 
+# 自动从GitHub拉取最新版stock_strategy_v3.py
+wget -q -O /app/stock_strategy_v3.py https://raw.githubusercontent.com/chow931124-png/stock-strategy/main/nas_deploy/stock_strategy_v3.py 2>/dev/null || curl -s -o /app/stock_strategy_v3.py https://raw.githubusercontent.com/chow931124-png/stock-strategy/main/nas_deploy/stock_strategy_v3.py 2>/dev/null
+
 # 每天第一次自动装依赖
 pip install --no-cache-dir mootdx requests pandas numpy fake_useragent 2>/dev/null
 
