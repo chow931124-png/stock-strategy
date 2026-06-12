@@ -45,8 +45,8 @@ NOTIFY_CONFIG = {
 # ════════════════════════════════════════════════════════
 STRATEGY = {
     "base": {"drawdown_min": 5, "drawdown_max": 35, "vol_ratio_min": 1.3, "ma_period": "ma5", "lookback_peak": 60},
-    "enhanced": {"atr_min": 5.0, "atr_max": 8.0},
-    "elite": {"bias_ma20_max": -3, "atr_min": 5.0, "atr_max": 8.0},
+    "enhanced": {"atr_min": 3.0, "atr_max": 999},
+    "elite": {"bias_ma20_max": -2, "atr_min": 3.0, "atr_max": 999},
     "ambush": {
         "amplitude_min": 10, "amplitude_max": 30,
         "ma_spread_max": 15,
@@ -250,20 +250,27 @@ class MarketThermometer:
                 if len(rows) >= 10:  # 有足够数据
                     break
             if rows:
-                up = sum(1 for row in rows if float(row.get("zhangfu", 0) or 0) > 0)
-                down = sum(1 for row in rows if float(row.get("zhangfu", 0) or 0) < 0)
-                total = len(rows)
-                valid = sum(1 for row in rows if float(row.get("zhangfu", 0) or 0) != 0)
-                up_ratio = up / valid if valid > 0 else 0.5
-                results["上涨占比"] = up_ratio
-                results["强势股数"] = total
+                # 数据有效性校验：如果所有涨跌幅都是0，说明接口返回了异常数据
+                has_valid_data = any(float(row.get("zhangfu", 0) or 0) != 0 for row in rows)
+                if not has_valid_data and len(rows) >= 10:
+                    print(f"  ⚠️ [温度计] 同花顺返回{len(rows)}只但涨跌幅全部为0，数据异常，回退到中性值")
+                    results["上涨占比"] = 0.5
+                    results["涨停跌停比"] = 1.0
+                else:
+                    up = sum(1 for row in rows if float(row.get("zhangfu", 0) or 0) > 0)
+                    down = sum(1 for row in rows if float(row.get("zhangfu", 0) or 0) < 0)
+                    total = len(rows)
+                    valid = up + down
+                    up_ratio = up / valid if valid > 0 else 0.5
+                    results["上涨占比"] = up_ratio
+                    results["强势股数"] = total
 
-                limit_up = sum(1 for row in rows if float(row.get("zhangfu", 0) or 0) >= 9.5)
-                limit_down = sum(1 for row in rows if float(row.get("zhangfu", 0) or 0) <= -9.5)
-                results["涨停数(估)"] = limit_up
-                results["跌停数(估)"] = limit_down
-                results["涨停跌停比"] = min(limit_up / max(limit_down, 1), 10)
-                print(f"  [温度计] 强势股{total}只 涨{up}跌{down} 涨停{limit_up}跌停{limit_down}")
+                    limit_up = sum(1 for row in rows if float(row.get("zhangfu", 0) or 0) >= 9.5)
+                    limit_down = sum(1 for row in rows if float(row.get("zhangfu", 0) or 0) <= -9.5)
+                    results["涨停数(估)"] = limit_up
+                    results["跌停数(估)"] = limit_down
+                    results["涨停跌停比"] = min(limit_up / max(limit_down, 1), 10)
+                    print(f"  [温度计] 强势股{total}只 涨{up}跌{down} 涨停{limit_up}跌停{limit_down}")
             else:
                 results["上涨占比"] = 0.5
                 results["涨停跌停比"] = 1.0
@@ -274,8 +281,51 @@ class MarketThermometer:
             results["涨停跌停比"] = 1.0
             results["上涨占比"] = 0.5
 
+        # 如果同花顺数据异常（全0或无数据），用股票池行情做备用
+        need_fallback = (
+            results.get("上涨占比", -1) in (0.5, -1)
+            and results.get("涨停跌停比", -1) in (1.0, -1)
+        )
+        if need_fallback:
+            pool_result = self._fetch_from_pool()
+            if pool_result:
+                print(f"  [温度计] 使用股票池行情备用数据（{pool_result['有效']}/{len(BUILTIN_STOCKS)}只）")
+                results.update(pool_result)
+
         self.cache = results
         return results
+
+    def _fetch_from_pool(self) -> dict:
+        """用股票池实时行情作为温度计备用源"""
+        try:
+            up = down = limit_up = limit_down = valid = 0
+            for code, name, sector in BUILTIN_STOCKS:
+                prefix = "sh" if code.startswith(("6","9")) else "sz"
+                url = f"https://qt.gtimg.cn/q={prefix}{code}"
+                r = requests.get(url, headers={"User-Agent":"Mozilla/5.0"}, timeout=3)
+                vals = r.content.decode("gbk").split('"')[1].split("~")
+                price = float(vals[3]) if vals[3] else 0
+                if price <= 0:
+                    continue
+                valid += 1
+                chg_pct = float(vals[32]) if vals[32] else 0
+                if chg_pct > 0: up += 1
+                elif chg_pct < 0: down += 1
+                if chg_pct >= 9.5: limit_up += 1
+                elif chg_pct <= -9.5: limit_down += 1
+            if valid < 30:
+                return None
+            return {
+                "上涨占比": up / max(up + down, 1),
+                "涨停跌停比": min(limit_up / max(limit_down, 1), 10),
+                "涨停数(估)": limit_up,
+                "跌停数(估)": limit_down,
+                "强势股数": valid,
+                "有效": valid,
+            }
+        except Exception as e:
+            print(f"  [温度计] 股票池备用源也失败: {e}")
+            return None
 
     def calc_temperature(self) -> dict:
         """计算市场温度"""
@@ -1026,7 +1076,9 @@ class StockScorer:
         f* = (p * b - q) / b
         p = 胜率, q = 1-p, b = 盈亏比(平均盈利/平均亏损)
         """
-        tier_cfg = {55: (0.55, 1.5), 69: (0.69, 1.8), 90: (0.90, 2.0)}
+        # 基于回测(2024-01~2026-06, 590交易日)校准的真实胜率
+        # 精选层55.1% 增强层49.8% 普通层60.6%
+        tier_cfg = {55: (0.60, 1.5), 69: (0.50, 1.8), 90: (0.55, 2.0)}
         p, b = tier_cfg.get(tier_score, (0.50, 1.0))
         q = 1 - p
         kelly = (p * b - q) / b if b > 0 else 0
@@ -1121,6 +1173,28 @@ class StockScorer:
         sector_weight = 0.4 if sector_score >= 60 else (0.2 if sector_score >= 40 else 0.1)
         composite = int(tier_score * (1 - sector_weight) + sector_score * sector_weight)
 
+        # 综合排序分（用于最终排名，每天只看前3-5名）
+        surge = self.calc_surge_potential(row, sector_score, None)
+        surge_sc = surge.get("score", 0) if isinstance(surge, dict) else surge
+        verify = self.verify_signal(row, sector_score)
+        green_lights = verify.get("green", 0)
+        ambush = self.calc_ambush(row, sector_score)
+
+        # ATR动态止损：止损 = ATR × 2, 范围 5%-15%
+        atr_val = row.get('atr_ratio', None)
+        if pd.notna(atr_val) and atr_val > 0:
+            atr_stop = min(0.15, max(0.05, atr_val * 2 / 100))
+        else:
+            atr_stop = 0.08  # 默认 -8%
+
+        final_sort = int(
+            composite * 0.35
+            + surge_sc * 0.20
+            + green_lights * 10 * 0.20      # 3灯×10=30分，权重20%
+            + sector_score * 0.15
+            + ambush * 0.10
+        )
+
         return {
             "tier": tier,
             "tier_score": tier_score,
@@ -1132,6 +1206,8 @@ class StockScorer:
             "verify": self.verify_signal(row, sector_score),
             "kelly_pct": self.calc_kelly_position(row, tier_score),
             "short_term": self.calc_short_term(row, sector_score),
+            "final_sort": final_sort,
+            "atr_stop_pct": atr_stop,
         }
 
 
@@ -1151,7 +1227,7 @@ class WeChatNotifier:
         if now.weekday() >= 5: return False
         return True
 
-    def notify(self, results: list, market_info: dict, sector_info: dict, mode: str = ""):
+    def notify(self, results: list, market_info: dict, sector_info: dict, mode: str = "", all_results: list = None):
         if not results:
             print("  [通知] 无信号，跳过")
             return
@@ -1163,81 +1239,72 @@ class WeChatNotifier:
 
         lines = []
         temp = market_info.get("temperature", 50)
-        state = market_info.get("state", "")
 
         # ── 头部 ──
-        lines.append(f"## {mode_label}A股策略 {datetime.now().strftime('%m/%d %H:%M')}")
-        lines.append(f"**🌡️ 温度**: {temp}/100 {state}　**📊 仓位**: {market_info.get('position_limit',1)*100:.0f}%")
+        mode_tag = f" [{mode_label}]" if mode_label else ""
+        pos_pct = market_info.get('position_limit', 1) * 100
+        sectors_str = '\n'.join(f'{s}({sc})' for s, sc in (sector_info.get('top') or [])[:3])
+        lines.append(f"【A股策略{mode_tag} {datetime.now().strftime('%m/%d %H:%M')}】")
+        lines.append(f"🌡️ {temp}°  仓位 {pos_pct:.0f}%")
+        lines.append(f"🏆\n  {sectors_str}")
         lines.append("")
 
-        # ── 板块TOP ──
-        if sector_info.get("top"):
-            lines.append("**🏆 热门板块**")
-            for s, sc in sector_info["top"][:3]:
-                bar = "█" * (sc // 10) + "░" * (10 - sc // 10)
-                lines.append(f"> {s} {bar} {sc}分")
-            lines.append("")
-
-        # ── 信号概览 ──
-        tiers_count = Counter(r["tier"] for r in results)
-        elite_n = tiers_count.get("💎 精选层", 0)
-        enhanced_n = tiers_count.get("🥈 增强层", 0)
-        normal_n = tiers_count.get("🥉 普通层", 0)
-        v_levels = Counter(r.get("verify",{}).get("level","") for r in results)
-        v_high = v_levels.get("🟢 高可信", 0)
-        v_mid = v_levels.get("🟡 中等", 0)
-
-        parts = []
-        if elite_n: parts.append(f"💎{elite_n}")
-        if enhanced_n: parts.append(f"🥈{enhanced_n}")
-        parts.append(f"🥉{normal_n}")
-        v_tag = f"{'🟢'*v_high}{'🟡'*v_mid}" if v_high or v_mid else ""
-        lines.append(f"**📈 信号**: {'+'.join(parts)}={len(results)}个　**🛡️** {v_tag}")
+        # ── 重点 TOP 3 ──
+        top3 = results[:3]
+        lines.append("━━━ 重点观察 TOP 3 ━━━")
+        for r in top3:
+            v = r.get("verify", {})
+            gl = v.get("green", 0) if v else 0
+            lights = "🟢" * gl + "🟡" * (3 - gl)
+            kp = r.get('kelly_pct', 0.15) * 100
+            dd = r.get('drawdown', 0)
+            sec = r.get('sector', '')
+            sec_sc = r.get('sector_score', 0)
+            surge = r.get('surge_score', {}) or {}
+            surge_sc = surge.get('score', 0) if isinstance(surge, dict) else surge
+            ambush = r.get('ambush_score', 0)
+            line = f"{r['name']}({r['code']}) {lights}"
+            line += f" | {sec}{sec_sc}分 | 综合{r['composite']} | 回撤{dd:+.0f}%"
+            extras = []
+            if surge_sc >= 30: extras.append(f"🔥{surge_sc}")
+            if ambush >= 60: extras.append(f"🚀{ambush}")
+            if r.get('short_score', 0) >= 50: extras.append(f"⚡{r['short_score']}")
+            lines.append(line)
+            stop_str = f"止损-{r.get('atr_stop_pct', 0.08)*100:.0f}%"
+            lines.append(f"  仓位{kp:.0f}% {stop_str} {' '.join(extras)}")
         lines.append("")
 
-        # ── 精选层/增强层详情 ──
-        for r in results:
-            if r["tier"] in ("💎 精选层", "🥈 增强层"):
-                v = r.get("verify", {})
-                v_tag_md = f" `{v.get('level','')}`" if v and v.get('level') else ""
-                sec_tag = f"`{r['sector']}`" if r.get('sector') else ""
-                details = f"¥{r['price']} 回撤{r['drawdown']:+.0f}% 量比{r['vol_ratio']:.1f}x 综合{r['composite']}分"
-                lines.append(
-                    f"- {r['tier']} **{r['name']}({r['code']})** {sec_tag}{v_tag_md}  \n  {details}"
-                )
+        # ── 全市场扫描 ──
+        ar = all_results or results
+        if len(ar) > 3:
+            lines.append("━━━ 全市场扫描 ━━━")
 
-        if normal_n > 0:
-            for r in results:
-                if r["tier"] == "🥉 普通层":
-                    v = r.get("verify", {})
-                    v_tag = f"`{v.get('level','')}`" if v and v.get('level') else ""
-                    sec_tag = f"`{r['sector']}`" if r.get('sector') else ""
-                    lines.append(
-                        f"- 🥉 **{r['name']}({r['code']})** {sec_tag}{v_tag} "
-                        f"¥{r['price']} 回撤{r['drawdown']:+.0f}%"
-                    )
+            short_sigs = sorted(ar, key=lambda r: -r.get('short_score', 0))[:3]
+            if short_sigs and short_sigs[0].get('short_score', 0) >= 50:
+                parts = [f"{r['name']}({r.get('short_score',0)}分)" for r in short_sigs]
+                lines.append(f"⚡ 短线: {' '.join(parts)}")
 
-        # ── 涨停潜力榜 ──
-        surge_top = sorted(results, key=lambda r: -r.get('surge_score', 0))[:3]
-        if surge_top and surge_top[0].get('surge_score', 0) >= 30:
-            lines.append("")
-            lines.append("**🔥 涨停质量**")
-            for r in surge_top:
-                s = r.get('surge_score', {})
-                sc = s.get('score', 0) if isinstance(s, dict) else s
-                cls = s.get('class', '') if isinstance(s, dict) else ''
-                bad = s.get('bad', '') if isinstance(s, dict) else ''
-                lines.append(f"> {r['name']}({r['code']}) {cls} {sc}分{' ❌'+bad if bad else ''}")
+            surge_top = sorted(ar, key=lambda r: -(r.get('surge_score', {}) or {}).get('score', 0))[:3]
+            if surge_top and (surge_top[0].get('surge_score', {}) or {}).get('score', 0) >= 30:
+                parts = []
+                for r in surge_top:
+                    s = r.get('surge_score', {}) or {}
+                    sc = s.get('score', 0) if isinstance(s, dict) else s
+                    parts.append(f"{r['name']}({sc}分)")
+                lines.append(f"🔥 涨停: {' '.join(parts)}")
 
-        # ── 埋伏信号榜 ──
-        ambush_top = sorted(results, key=lambda r: -r.get('ambush_score', 0))[:3]
-        if ambush_top and ambush_top[0].get('ambush_score', 0) >= 60:
-            lines.append("")
-            lines.append("**🚀 埋伏信号榜**")
-            for r in ambush_top:
-                lines.append(f"> {r['name']}({r['code']}) {r['sector']} 振幅{r.get('amplitude_60',0):.0f}% 埋伏{r.get('ambush_score',0)}分")
+            ambush_top = sorted(ar, key=lambda r: -r.get('ambush_score', 0))[:3]
+            if ambush_top and ambush_top[0].get('ambush_score', 0) >= 60:
+                parts = [f"{r['name']}({r.get('ambush_score',0)}分)" for r in ambush_top]
+                lines.append(f"🚀 埋伏: {' '.join(parts)}")
 
-        # ── 昨日信号追踪（仅早报） ──
+            sector_counts = Counter(r['sector'] for r in ar)
+            top_sec = sector_counts.most_common(3)
+            if top_sec:
+                parts = [f"{s}({c}只)" for s, c in top_sec]
+                lines.append(f"📌 信号集中: {' '.join(parts)}")
+
+        # ── 尾部 ──
         if mode == "morning":
             tracking = get_yesterday_tracking()
             if tracking:
@@ -1260,32 +1327,9 @@ class WeChatNotifier:
             lines.append("")
             lines.append(f"**🇺🇸 隔夜** | {' '.join(us_parts)}")
 
-        # ── 模式专属建议 ──
-        lines.append("")
-        if mode == "lunch":
-            lines.append("**📌 下午操作**")
-            lines.append("1. 精选/增强层可入场")
-            lines.append("2. 普通层等尾盘确认")
-            lines.append("3. 冲高不追，等回调")
-        elif mode == "close":
-            lines.append("**📌 收盘总结**")
-            lines.append("1. 今日信号明日可操作")
-            lines.append("2. 龙虎榜数据更新中")
-            lines.append("3. 明早关注新催化")
-        elif mode == "morning":
-            lines.append("**📌 开盘前参考**")
-            lines.append("1. 隔夜美股NVDA/FCX已收盘")
-            lines.append("2. 昨日信号仍有效，开盘观察")
-            lines.append("3. 今日关注板块: 科技/AI/有色")
-        elif mode == "night":
-            lines.append("**📌 明日计划**")
-            lines.append("1. 精选/增强层开盘观察")
-            lines.append("2. 高开>3%等回调")
-            lines.append("3. 止损设在-8%")
-
         lines.append("")
         lines.append(f"---")
-        lines.append(f"**🛑 仓位**: {market_info.get('position_limit',1)*100:.0f}% | **止损**: -8% | 仅供参考")
+        lines.append(f"**🛑 仓位**: {market_info.get('position_limit',1)*100:.0f}% | 仅供参考，不构成投资建议")
 
         content = "\n".join(lines)
 
@@ -1505,6 +1549,82 @@ class PolicyCatalystDetector:
 
 
 # ════════════════════════════════════════════════════════
+# 模块8：组合风控过滤器
+# ════════════════════════════════════════════════════════
+def portfolio_risk_filter(signals: list, max_total_positions: int = 5,
+                          max_sector_pct: float = 0.30) -> list:
+    """
+    组合风控：确保不会过度集中在单一行业或标的。
+
+    规则：
+    1. 同一行业最多取排序分最高的 2 只
+    2. 总信号数不超过 max_total_positions
+    3. 单票凯利 > 50% 的砍到 50%（极端保守）
+    """
+    if not signals:
+        return signals
+
+    # 按 final_sort 降序
+    sorted_sig = sorted(signals, key=lambda r: -r.get("final_sort", r.get("composite", 0)))
+
+    # 行业集中度控制
+    sector_count = {}
+    filtered = []
+    for r in sorted_sig:
+        sec = r.get("sector", "其他")
+        sector_count.setdefault(sec, 0)
+        if sector_count[sec] >= 2:
+            continue  # 同一行业最多 2 只
+        sector_count[sec] += 1
+
+        # 凯利上限：单票不超过 50%
+        kelly = r.get("kelly_pct", 0.15)
+        if kelly > 0.50:
+            r["kelly_pct"] = 0.50
+
+        filtered.append(r)
+        if len(filtered) >= max_total_positions:
+            break
+
+    return filtered
+
+
+# ════════════════════════════════════════════════════════
+# 模块9：自学习反馈
+# ════════════════════════════════════════════════════════
+def apply_self_learning_feedback(sector_scores: dict) -> dict:
+    """
+    从自学习数据中读取板块历史胜率，对胜率低的板块降权。
+
+    仅在板块有 >= 10 笔已检查交易且胜率 < 40% 时触发。
+    """
+    try:
+        learn_path = CACHE_DIR / "self_learn.json"
+        if not learn_path.exists():
+            return sector_scores
+
+        learn_data = json.loads(learn_path.read_text())
+        stats = learn_data.get("stats", {})
+        sector_stats = stats.get("by_sector", {})
+
+        if not sector_stats:
+            return sector_scores
+
+        adjusted = dict(sector_scores)
+        for sector, st in sector_stats.items():
+            if st.get("total", 0) >= 10 and st.get("wr_5d", 50) < 40:
+                if sector in adjusted:
+                    old = adjusted[sector]
+                    adjusted[sector] = int(old * 0.7)
+                    print(f"  [自学习] {sector} 历史胜率{st['wr_5d']:.0f}%({st['total']}笔) → 板块评分 {old}→{adjusted[sector]} (打7折)")
+        return adjusted
+    except Exception as e:
+        if "debug" in dir() or True:
+            pass  # 静默失败，不影响主流程
+        return sector_scores
+
+
+# ════════════════════════════════════════════════════════
 # ════════════════════════════════════════════════════════
 # 主流程
 # ════════════════════════════════════════════════════════
@@ -1606,6 +1726,10 @@ def main():
     # 后续使用
     top_sectors = top_sectors_list[:5]
     bottom_sectors = bottom_sectors_list[:3]
+
+    # ── 自学习反馈：对历史胜率低的板块降权 ──
+    sector_scores = apply_self_learning_feedback(sector_scores)
+
     # ── 步骤3：个股扫描 ──
     # 确定扫描范围
     if args.codes:
@@ -1705,6 +1829,8 @@ def main():
                 "atr_ratio": row["atr_ratio"],
                 "amplitude_60": row.get("amplitude_60", 0),
                 "ma_spread": row.get("ma_spread", 0),
+                "final_sort": score_result.get("final_sort", 0),
+                "atr_stop_pct": score_result.get("atr_stop_pct", 0.08),
             })
 
         if not args.quiet and not args.quiet:
@@ -1771,8 +1897,16 @@ def main():
         except:
             pass
 
-    # ── 排序——按综合分降序 ──
-    results.sort(key=lambda r: -r["composite"])
+    # ── 排序——按综合排序分降序（综合分×0.35 + 涨停质量×0.2 + 三灯×0.2 + 板块×0.15 + 埋伏×0.1）
+    results.sort(key=lambda r: -r.get("final_sort", r["composite"]))
+
+    # ── 保存全量结果用于分析，再过滤出推荐信号 ──
+    all_results = list(results)  # 备份给短线/涨停/埋伏/漏网之鱼分析用
+    old_count = len(results)
+    results = portfolio_risk_filter(results, max_total_positions=8)
+    if len(results) < old_count:
+        print(f"\n  🛡️ [风控] 行业集中度过滤: {old_count} → {len(results)} 个信号")
+        print(f"  🛡️  同一行业最多2只，总信号最多8只")
 
     # ── 输出 ──
     print(f"\n{'='*60}")
@@ -1801,14 +1935,29 @@ def main():
 
     # 建议
     if results:
-        print("📋 操作建议:")
-        for r in results[:5]:
+        # ── 重点观察（按综合排序分取前3名） ──
+        top3 = results[:3]
+        print("\n🎯 重点观察 TOP 3（综合排序分 | 只看这些）")
+        print(f"    {'':12s} {'排序分':>6s} {'层级':>8s} {'板块分':>6s} {'涨停':>5s} {'灯':>3s} {'建议仓位'}")
+        print("    " + "-" * 60)
+        for r in top3:
+            fs = r.get("final_sort", r["composite"])
+            s = r.get("surge_score", {})
+            ss = s.get("score", 0) if isinstance(s, dict) else s
+            v = r.get("verify", {})
+            gl = v.get("green", 0) if v else 0
             kp = r.get("kelly_pct", 0.15) * 100
-            pos_label = "轻仓" if kp <= 15 else ("中仓" if kp <= 30 else "重仓")
-            print(f"  {r['name']}({r['code']}): {r['tier']} 综合{r['composite']}分 → {pos_label}({kp:.0f}%)")
+            bar = "█" * (fs // 10) + "░" * (10 - fs // 10)
+            print(f"    {r['name']:10s}({r['code']}) {bar} {fs:>3d}分 "
+                  f"{r['tier']} {r.get('sector_score',0):>3d}分 "
+                  f"{'🟢'*gl}{'🟡'*(3-gl)}  {kp:.0f}%")
+            stop_pct = r.get('atr_stop_pct', 0.08) * 100
+            print(f"    {'':12s} 止损-{stop_pct:.0f}% | +10%后回撤6%自动走 | 持有≤20日")
+        print(f"    💡 只做这3只，其余忽略。今日总仓位上限: {pos_limit*100:.0f}%")
+        print()
 
-        # ── 短线信号榜 ──
-        short_sigs = sorted(results, key=lambda r: -r.get('short_score', 0))[:3]
+        # ── 短线信号榜（基于全量信号）──
+        short_sigs = sorted(all_results, key=lambda r: -r.get('short_score', 0))[:3]
         if short_sigs and short_sigs[0].get('short_score', 0) >= 50:
             print(f"\n⚡ 短线信号榜 TOP3（持有1-5日）:")
             for r in short_sigs:
@@ -1818,8 +1967,8 @@ def main():
                       f"短线{r['short_score']}分 | {reasons}")
             print(f"  📌 放量突破+MACD金叉+板块共振，短线机会")
 
-        # ── 涨停质量分析 TOP3 ──
-        surge_top = sorted(results, key=lambda r: -r.get('surge_score', {}).get('score', 0))[:3]
+        # ── 涨停质量分析 TOP3（基于全量信号）──
+        surge_top = sorted(all_results, key=lambda r: -r.get('surge_score', {}).get('score', 0))[:3]
         if surge_top and surge_top[0].get('surge_score', {}).get('score', 0) >= 30:
             print(f"\n🔥 涨停质量分析 TOP3")
             print(f"  评级: 🟢高质量板 | 🟡中质量板 | 🔴低质量板（烂板别碰）")
@@ -1841,8 +1990,8 @@ def main():
                 print(f"     💡 {adv}")
             print(f"  ⚠️ 烂板识别比好板识别更重要—避开低质量板")
 
-        # ── 埋伏信号榜 ──
-        ambush_top = sorted(results, key=lambda r: -r.get('ambush_score', 0))[:3]
+        # ── 埋伏信号榜（基于全量信号）──
+        ambush_top = sorted(all_results, key=lambda r: -r.get('ambush_score', 0))[:3]
         if ambush_top and ambush_top[0].get('ambush_score', 0) >= 60:
             print(f"\n🚀 埋伏信号榜 TOP3（横盘突破候选）:")
             for r in ambush_top:
@@ -1854,7 +2003,8 @@ def main():
                       f"埋伏{r['ambush_score']}分")
             print(f"  📌 横盘充分+均线粘合+放量异动，有可能突破向上")
 
-        print(f"\n🛑 止损: -8%  持有期: 20日  总仓位上限: {pos_limit*100:.0f}%")
+        avg_stop = sum(r.get('atr_stop_pct', 0.08) for r in results) / len(results) if results else 0.08
+        print(f"\n🛑 止损: ATR动态({avg_stop*100:.0f}%均值)  移动止盈: +10%后回撤6%离场  持有期: 20日  总仓位上限: {pos_limit*100:.0f}%")
 
         # ── 昨日信号追踪（仅早报模式） ──
     if args.mode == "morning":
@@ -1884,13 +2034,13 @@ def main():
         print(f"\n📝 市场分析解读")
         print(f"{'─'*60}")
 
-        # 板块集中度分析
-        sector_counts = Counter(r['sector'] for r in results)
+        # 板块集中度分析（基于全量信号）
+        sector_counts = Counter(r['sector'] for r in all_results)
         top_sector = sector_counts.most_common(1)
         if top_sector and top_sector[0][1] >= 3:
             sec_name, sec_count = top_sector[0]
-            ratio = sec_count / len(results) * 100
-            print(f"  🎯 信号集中在【{sec_name}】({sec_count}/{len(results)}, {ratio:.0f}%)")
+            ratio = sec_count / len(all_results) * 100
+            print(f"  🎯 信号集中在【{sec_name}】({sec_count}/{len(all_results)}, {ratio:.0f}%)")
             if ratio > 60:
                 print(f"     高度集中，注意板块回调风险，单板块仓位不要超过30%")
             elif ratio > 40:
@@ -1924,12 +2074,12 @@ def main():
             print(f"  🌡️ 市场温度{t}分 —— 冰点，暂停策略等待")
 
         # 信号层级质量分析
-        elite_count = sum(1 for r in results if r['tier'] == '💎 精选层')
-        enhanced_count = sum(1 for r in results if r['tier'] == '🥈 增强层')
-        normal_count = sum(1 for r in results if r['tier'] == '🥉 普通层')
+        elite_count = sum(1 for r in all_results if r['tier'] == '💎 精选层')
+        enhanced_count = sum(1 for r in all_results if r['tier'] == '🥈 增强层')
+        normal_count = sum(1 for r in all_results if r['tier'] == '🥉 普通层')
         print(f"  📊 信号质量: 精选{elite_count} / 增强{enhanced_count} / 普通{normal_count}")
         # 三灯验证汇总
-        v_levels = Counter(r.get("verify", {}).get("level","") for r in results)
+        v_levels = Counter(r.get("verify", {}).get("level","") for r in all_results)
         v_high = v_levels.get("🟢 高可信", 0)
         v_mid = v_levels.get("🟡 中等", 0)
         v_low = v_levels.get("🔴 低可信", 0)
@@ -1943,15 +2093,15 @@ def main():
             print(f"     全部是普通层信号，胜率有限，注意控制单票仓位")
 
         # 趋势判断
-        if surge_top and surge_top[0]['surge_score'] >= 50:
-            print(f"  ⚡ 存在高潜力品种({surge_top[0]['name']} {surge_top[0]['surge_score']}分)")
+        if surge_top and (surge_top[0].get('surge_score', {}) or {}).get('score', 0) >= 50:
+            print(f"  ⚡ 存在高潜力品种({surge_top[0]['name']} {(surge_top[0].get('surge_score', {}) or {}).get('score', 0)}分)")
             print(f"     放量充分+弹性好，若明日开盘不跳空可关注")
 
         # 操作建议总结
         best = results[0] if results else None
         if best:
             print(f"\n  💡 重点关注: {best['name']}({best['code']}) [{best['sector']}]")
-            print(f"     {best['tier']} 综合{best['composite']}分 | 涨停潜力{best['surge_score']}分")
+            print(f"     {best['tier']} 综合{best['composite']}分 | 涨停潜力{(best.get('surge_score', {}) or {}).get('score', 0)}分")
             print(f"     ⏰ 明日观察: 是否高开>3%则等回调，平开/低开可关注")
 
         print(f"{'─'*60}")
@@ -1964,6 +2114,15 @@ def main():
     if results:
         record_today_signals(results, args.mode)
 
+    # ── 自学习：回检历史信号 ──
+    try:
+        from self_learn import SelfLearnEngine
+        sle = SelfLearnEngine()
+        sle.check_signals()
+    except Exception as e:
+        if args.debug:
+            print(f"  [自学习] 跳过: {e}")
+
     # ── 微信推送 ──
     if args.wechat and results:
         notifier = WeChatNotifier()
@@ -1973,7 +2132,7 @@ def main():
             "position_limit": pos_limit,
         }
         sector_info = {"top": top_sectors}
-        notifier.notify(results, market_info, sector_info, mode=args.mode)
+        notifier.notify(results, market_info, sector_info, mode=args.mode, all_results=all_results)
 
 
 if __name__ == "__main__":
