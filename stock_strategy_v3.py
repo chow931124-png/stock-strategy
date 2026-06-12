@@ -1656,6 +1656,55 @@ def main():
     if (skipped_st > 0 or skipped_low_liquidity > 0) and not args.quiet:
         print(f"\n  [过滤] ST退市: {skipped_st}只 | 流动性不足: {skipped_low_liquidity}只 | 有效扫描: {len(stock_list)-skipped_st-skipped_low_liquidity}只")
 
+    # ── 漏网之鱼分析 ──
+    if not args.quiet and stock_list:
+        try:
+            # 拉同花顺今日强势股
+            mq = "Mozilla/5.0"
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            u = f"http://zx.10jqka.com.cn/event/api/getharden/date/{today_str}/orderby/date/orderway/desc/charset/GBK/"
+            rr = requests.get(u, headers={"User-Agent": mq}, timeout=10)
+            hot_rows = rr.json().get("data") or []
+            if len(hot_rows) < 10:
+                for dd in range(1, 5):
+                    u2 = f"http://zx.10jqka.com.cn/event/api/getharden/date/{(datetime.now()-timedelta(days=dd)).strftime('%Y-%m-%d')}/orderby/date/orderway/desc/charset/GBK/"
+                    rr2 = requests.get(u2, headers={"User-Agent": mq}, timeout=10)
+                    hot_rows = rr2.json().get("data") or []
+                    if len(hot_rows) >= 10: break
+            if hot_rows:
+                # 强势股TOP15代码列表
+                hot_codes = set()
+                for row in hot_rows[:20]:
+                    c = row.get("code","")
+                    reason = row.get("reason","")
+                    if c and len(c) == 6: hot_codes.add(c)
+                # 扫描池代码
+                pool_codes = {c for c, _, _ in stock_list if not c.startswith(('300','301','688'))}
+                signal_codes = {r["code"] for r in results}
+                # 在池中但没出信号
+                missed = pool_codes & hot_codes - signal_codes
+                # 不在池中但强势
+                not_in_pool = hot_codes - pool_codes - signal_codes
+                # 只保留主板
+                not_in_pool = {c for c in not_in_pool if not c.startswith(('300','301','688'))}
+                
+                if missed or not_in_pool:
+                    print(f"\n🔍 漏网之鱼分析")
+                    if missed:
+                        names_missed = []
+                        for c, n, s in stock_list:
+                            if c in missed:
+                                # 看看差在哪里
+                                names_missed.append(n or c)
+                        print(f"  📌 池中未出信号但强势: {', '.join(list(missed)[:5])}")
+                        print(f"     (在池子里但条件没触发，可能是量比/回撤差一点)")
+                    if not_in_pool:
+                        ni = list(not_in_pool)[:5]
+                        print(f"  🆕 不在池中但连续强势: {', '.join(ni)}")
+                        print(f"     (建议关注是否需要补入股票池)")
+        except:
+            pass
+
     # ── 排序——按综合分降序 ──
     results.sort(key=lambda r: -r["composite"])
 
