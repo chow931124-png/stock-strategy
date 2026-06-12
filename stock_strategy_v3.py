@@ -635,15 +635,13 @@ class DataEngine:
         """获取K线，磁盘缓存优先→mootdx→HTTP备用"""
         today = datetime.now().strftime("%Y-%m-%d")
         cache_file = self._cache_path(code)
-        # 检查磁盘缓存：当日已缓存则直接加载，不再拉取
+        # 检查磁盘缓存：如果是今天生成的则直接加载
         if cache_file.exists():
             try:
-                df = pd.read_pickle(cache_file)
-                if isinstance(df, pd.DataFrame) and len(df) > 100:
-                    # 验证缓存是否已包含今天的数据（至少是最新的交易日）
-                    last_date = pd.to_datetime(df['date'].iloc[-1]).strftime('%Y-%m-%d')
-                    if last_date == today or datetime.now().hour >= 15 or True:
-                        # 只要缓存存在且有效就复用（一天内数据不会变）
+                file_mtime = datetime.fromtimestamp(cache_file.stat().st_mtime).strftime('%Y-%m-%d')
+                if file_mtime == today:
+                    df = pd.read_pickle(cache_file)
+                    if isinstance(df, pd.DataFrame) and len(df) > 100:
                         return df
             except:
                 pass
