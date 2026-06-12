@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# 密钥 / 凭证（禁止上传）
+.stock_cron.sh
+.env
+.env.*
+*.local.json
+
+# macOS
+.DS_Store
+.DS_Store?
+
+# 本地缓存
+.tradingagents/
+
+# 日志
+*.log
+
+# 虚拟环境
+venv/
+.venv/
+env/
