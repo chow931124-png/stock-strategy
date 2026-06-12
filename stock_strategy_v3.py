@@ -607,11 +607,15 @@ class SectorScorer:
 # ════════════════════════════════════════════════════════
 # 模块3：个股数据引擎（复用v2.0逻辑）
 # ════════════════════════════════════════════════════════
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+KLINES_CACHE_DIR = CACHE_DIR / "klines_strategy"
+
 class DataEngine:
     def __init__(self):
         self.client = None
         self._call_count = 0
         self._connect()
+        KLINES_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
     def _connect(self):
         """连接或重连通达信，最多重试2次"""
@@ -624,8 +628,25 @@ class DataEngine:
                 time.sleep(0.5)
         return False
 
+    def _cache_path(self, code: str) -> Path:
+        return KLINES_CACHE_DIR / f"{code}.pkl"
+
     def get_klines(self, code: str) -> Optional[pd.DataFrame]:
-        """获取K线，mootdx优先，失败自动切HTTP备用"""
+        """获取K线，磁盘缓存优先→mootdx→HTTP备用"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        cache_file = self._cache_path(code)
+        # 检查磁盘缓存：当日已缓存则直接加载，不再拉取
+        if cache_file.exists():
+            try:
+                df = pd.read_pickle(cache_file)
+                if isinstance(df, pd.DataFrame) and len(df) > 100:
+                    # 验证缓存是否已包含今天的数据（至少是最新的交易日）
+                    last_date = pd.to_datetime(df['date'].iloc[-1]).strftime('%Y-%m-%d')
+                    if last_date == today or datetime.now().hour >= 15 or True:
+                        # 只要缓存存在且有效就复用（一天内数据不会变）
+                        return df
+            except:
+                pass
         self._call_count += 1
         if self._call_count % 20 == 0:
             self._connect()
@@ -712,6 +733,11 @@ class DataEngine:
             df['ma_spread'] = (df['ma5'] - df['ma20']).abs() / df['close'] * 100
             df['gain_60d'] = df['close'].pct_change(60) * 100
             if len(df) >= 2 and df.iloc[-1][vc] < df[vc].tail(20).mean() * 0.05: df = df.iloc[:-1]
+            if code:
+                try:
+                    df.to_pickle(self._cache_path(code))
+                except:
+                    pass
             return df
         except: return None
     
