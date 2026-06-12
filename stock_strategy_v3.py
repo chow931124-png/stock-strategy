@@ -607,15 +607,27 @@ class SectorScorer:
 # ════════════════════════════════════════════════════════
 # 模块3：个股数据引擎（复用v2.0逻辑）
 # ════════════════════════════════════════════════════════
-CACHE_DIR.mkdir(parents=True, exist_ok=True)
-KLINES_CACHE_DIR = CACHE_DIR / "klines_strategy"
 
 class DataEngine:
+    _klines_cache_dir = None
+
     def __init__(self):
         self.client = None
         self._call_count = 0
         self._connect()
-        KLINES_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        self._init_cache_dir()
+
+    @classmethod
+    def _init_cache_dir(cls):
+        if cls._klines_cache_dir is None:
+            dir_path = CACHE_DIR / "klines_strategy"
+            dir_path.mkdir(parents=True, exist_ok=True)
+            cls._klines_cache_dir = dir_path
+
+    def _cache_path(self, code: str):
+        if self._klines_cache_dir is None:
+            self._init_cache_dir()
+        return self._klines_cache_dir / f"{code}.pkl"
 
     def _connect(self):
         """连接或重连通达信，最多重试2次"""
@@ -783,7 +795,8 @@ def get_fcx_change() -> float:
 # ════════════════════════════════════════════════════════
 # 模块3.8：信号追踪器（记录/回溯信号表现）
 # ════════════════════════════════════════════════════════
-CACHE_DIR = Path("/app/cache") if Path("/app/cache").exists() else Path(__file__).parent / "cache"
+CACHE_DIR = Path("/app/cache") if Path("/app/cache").exists() else (Path(__file__).parent / "cache")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 SIGNAL_LOG_PATH = CACHE_DIR / "signal_log.json"
 
 def load_signal_log() -> dict:
