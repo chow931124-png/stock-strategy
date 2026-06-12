@@ -575,62 +575,95 @@ class DataEngine:
         return False
 
     def get_klines(self, code: str) -> Optional[pd.DataFrame]:
-        """获取K线，自动重连3次"""
+        """获取K线，mootdx优先，失败自动切HTTP备用"""
         self._call_count += 1
         if self._call_count % 20 == 0:
             self._connect()
-        for attempt in range(3):
+        for attempt in range(2):
             try:
                 if self.client is None:
                     if not self._connect():
                         continue
                 df = self.client.bars(symbol=code, category=4, offset=750)
                 if df is None or df.empty:
-                    time.sleep(0.5)
                     continue
-                df = df.copy()
-                if 'datetime' in df.columns:
-                    df['date'] = pd.to_datetime(df['datetime'])
-                else:
-                    df['date'] = df.index
-                vol_col = 'vol' if 'vol' in df.columns else 'volume'
-                df = df.sort_values('date').reset_index(drop=True)
-                for n in [5, 10, 20, 60]:
-                    df[f'ma{n}'] = df['close'].rolling(n).mean()
-                df['vol_ma20'] = df[vol_col].rolling(20).mean()
-                df['vol_ratio_20'] = df[vol_col] / df['vol_ma20'].replace(0, np.nan)
-                df['peak_60'] = df['close'].rolling(60).max()
-                df['drawdown'] = (df['close'] - df['peak_60']) / df['peak_60'] * 100
-                df['bias_ma20'] = (df['close'] - df['ma20']) / df['ma20'] * 100
-                df['tr'] = np.maximum(df['high'] - df['low'], np.maximum(
-                    abs(df['high'] - df['close'].shift(1)),
-                    abs(df['low'] - df['close'].shift(1))))
-                df['atr14'] = df['tr'].rolling(14).mean()
-                df['atr_ratio'] = df['atr14'] / df['close'] * 100
-                df['change_pct'] = df['close'].pct_change() * 100
-                ema12 = df['close'].ewm(span=12).mean()
-                ema26 = df['close'].ewm(span=26).mean()
-                df['macd'] = ema12 - ema26
-                df['macd_signal'] = df['macd'].ewm(span=9).mean()
-                df['macd_hist'] = df['macd'] - df['macd_signal']
-                df['strength_3d'] = df['close'].pct_change(3) * 100
-                df['amplitude_60'] = (df['high'].rolling(60).max() - df['low'].rolling(60).min()) / df['close'] * 100
-                df['ma_spread'] = (df['ma5'] - df['ma20']).abs() / df['close'] * 100
-                df['gain_60d'] = df['close'].pct_change(60) * 100
-                # 如果最新K线量<100（盘前无成交），直接删除
-                vc = 'vol' if 'vol' in df.columns else 'volume'
-                if len(df) >= 2 and df.iloc[-1][vc] < df[vc].tail(20).mean() * 0.05:
-                    df = df.iloc[:-1]
-                return df
-            except ConnectionResetError:
-                time.sleep(1)
-                self._connect()
-                continue
-            except Exception as e:
-                if attempt == 2:
-                    return None
+                return self._calc_indicators(df, code)
+            except:
+                if attempt == 1:
+                    return self._get_klines_http(code)
                 time.sleep(0.5)
-        return None
+        return self._get_klines_http(code)
+
+    def _get_klines_http(self, code: str) -> Optional[pd.DataFrame]:
+        """HTTP备用K线接口"""
+        for source_url in [
+            f"https://web.ifzgz.top/qt/stock/kline?code={'sh'if code.startswith(('6','9'))else'sz'}{code}&type=day&count=800",
+        ]:
+            try:
+                r = requests.get(source_url, headers={"User-Agent":"Mozilla/5.0"}, timeout=15)
+                d = r.json()
+                rows = []
+                if d.get("data"):
+                    klines = d["data"].get("klines") or d["data"].get("items") or []
+                    for row in klines:
+                        parts = row.split(",") if isinstance(row, str) else row
+                        if len(parts) >= 6:
+                            rows.append({"date":parts[0],"open":float(parts[1]),"close":float(parts[2]),"high":float(parts[3]),"low":float(parts[4]),"vol":float(parts[5]),"amount":float(parts[6]) if len(parts)>6 else 0})
+                if len(rows) >= 60:
+                    df = pd.DataFrame(rows)
+                    df['date'] = pd.to_datetime(df['date'])
+                    return self._calc_indicators(df, code)
+            except: pass
+        return self._get_klines_baidu(code)
+
+    def _get_klines_baidu(self, code: str) -> Optional[pd.DataFrame]:
+        """百度股市通K线（备用备用）"""
+        try:
+            r = requests.get("https://finance.pae.baidu.com/selfselect/getstockquotation",
+                params={"all":"1","isStock":"true","newFormat":"1","group":"quotation_kline_ab","code":code,"ktype":"1"},
+                headers={"User-Agent":"Mozilla/5.0","Origin":"https://gushitong.baidu.com"}, timeout=15)
+            d = r.json()
+            md = (d.get("Result") or {}).get("newMarketData") or {}
+            lines = (md.get("marketData") or "").split(";")
+            if len(lines) < 60: return None
+            rows = []
+            for line in lines:
+                v = line.split(",")
+                if len(v) >= 7:
+                    rows.append({"date":v[0],"open":float(v[1]),"close":float(v[2]),"high":float(v[3]),"low":float(v[4]),"vol":float(v[5]),"amount":float(v[6])})
+            if len(rows) < 60: return None
+            df = pd.DataFrame(rows)
+            df['date'] = pd.to_datetime(df['date'])
+            return self._calc_indicators(df, code)
+        except: return None
+
+    def _calc_indicators(self, df: pd.DataFrame, code: str = "") -> pd.DataFrame:
+        """统一计算技术指标"""
+        try:
+            df = df.copy()
+            if 'datetime' in df.columns: df['date'] = pd.to_datetime(df['datetime'])
+            elif 'date' not in df.columns: df['date'] = df.index
+            vc = 'vol' if 'vol' in df.columns else 'volume'
+            df = df.sort_values('date').reset_index(drop=True)
+            for n in [5,10,20,60]: df[f'ma{n}'] = df['close'].rolling(n).mean()
+            df['vol_ma20'] = df[vc].rolling(20).mean()
+            df['vol_ratio_20'] = df[vc] / df['vol_ma20'].replace(0, np.nan)
+            df['peak_60'] = df['close'].rolling(60).max()
+            df['drawdown'] = (df['close'] - df['peak_60']) / df['peak_60'] * 100
+            df['bias_ma20'] = (df['close'] - df['ma20']) / df['ma20'] * 100
+            df['tr'] = np.maximum(df['high']-df['low'], np.maximum(abs(df['high']-df['close'].shift()),abs(df['low']-df['close'].shift())))
+            df['atr14'] = df['tr'].rolling(14).mean()
+            df['atr_ratio'] = df['atr14'] / df['close'] * 100
+            df['change_pct'] = df['close'].pct_change() * 100
+            e12 = df['close'].ewm(span=12).mean(); e26 = df['close'].ewm(span=26).mean()
+            df['macd'] = e12 - e26; df['macd_signal'] = df['macd'].ewm(span=9).mean(); df['macd_hist'] = df['macd'] - df['macd_signal']
+            df['strength_3d'] = df['close'].pct_change(3) * 100
+            df['amplitude_60'] = (df['high'].rolling(60).max() - df['low'].rolling(60).min()) / df['close'] * 100
+            df['ma_spread'] = (df['ma5'] - df['ma20']).abs() / df['close'] * 100
+            df['gain_60d'] = df['close'].pct_change(60) * 100
+            if len(df) >= 2 and df.iloc[-1][vc] < df[vc].tail(20).mean() * 0.05: df = df.iloc[:-1]
+            return df
+        except: return None
     
     def get_tencent_quote(self, code: str) -> dict:
         prefix = "sh" if code.startswith(("6","9")) else "sz"
