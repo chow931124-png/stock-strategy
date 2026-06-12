@@ -370,7 +370,7 @@ class SectorScorer:
         self.raw = {}
 
     # 板块缓存（东财接口失败时使用）
-    _cache_file = Path("/app/cache") / "sector_cache.json"
+    _cache_file = (Path("/app/cache") if Path("/app/cache").exists() else Path(__file__).parent / "cache") / "sector_cache.json"
 
     def fetch_sector_data(self):
         """获取板块数据（带缓存/同花顺fallback）"""
@@ -676,7 +676,8 @@ def get_fcx_change() -> float:
 # ════════════════════════════════════════════════════════
 # 模块3.8：信号追踪器（记录/回溯信号表现）
 # ════════════════════════════════════════════════════════
-SIGNAL_LOG_PATH = Path("/app/cache") / "signal_log.json"
+CACHE_DIR = Path("/app/cache") if Path("/app/cache").exists() else Path(__file__).parent / "cache"
+SIGNAL_LOG_PATH = CACHE_DIR / "signal_log.json"
 
 def load_signal_log() -> dict:
     """加载历史信号日志"""
@@ -689,7 +690,7 @@ def load_signal_log() -> dict:
 
 def save_signal_log(log: dict):
     """保存信号日志"""
-    Path("/app/cache").mkdir(parents=True, exist_ok=True); SIGNAL_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CACHE_DIR.mkdir(parents=True, exist_ok=True); SIGNAL_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     SIGNAL_LOG_PATH.write_text(json.dumps(log, ensure_ascii=False, indent=2))
 
 def record_today_signals(results: list, mode: str = ""):
