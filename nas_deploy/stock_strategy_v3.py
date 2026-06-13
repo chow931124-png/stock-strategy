@@ -607,11 +607,27 @@ class SectorScorer:
 # ════════════════════════════════════════════════════════
 # 模块3：个股数据引擎（复用v2.0逻辑）
 # ════════════════════════════════════════════════════════
+
 class DataEngine:
+    _klines_cache_dir = None
+
     def __init__(self):
         self.client = None
         self._call_count = 0
         self._connect()
+        self._init_cache_dir()
+
+    @classmethod
+    def _init_cache_dir(cls):
+        if cls._klines_cache_dir is None:
+            dir_path = CACHE_DIR / "klines_strategy"
+            dir_path.mkdir(parents=True, exist_ok=True)
+            cls._klines_cache_dir = dir_path
+
+    def _cache_path(self, code: str):
+        if self._klines_cache_dir is None:
+            self._init_cache_dir()
+        return self._klines_cache_dir / f"{code}.pkl"
 
     def _connect(self):
         """连接或重连通达信，最多重试2次"""
@@ -625,7 +641,19 @@ class DataEngine:
         return False
 
     def get_klines(self, code: str) -> Optional[pd.DataFrame]:
-        """获取K线，mootdx优先，失败自动切HTTP备用"""
+        """获取K线，磁盘缓存优先→mootdx→HTTP备用"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        cache_file = self._cache_path(code)
+        # 检查磁盘缓存：如果是今天生成的则直接加载
+        if cache_file.exists():
+            try:
+                file_mtime = datetime.fromtimestamp(cache_file.stat().st_mtime).strftime('%Y-%m-%d')
+                if file_mtime == today:
+                    df = pd.read_pickle(cache_file)
+                    if isinstance(df, pd.DataFrame) and len(df) > 100:
+                        return df
+            except:
+                pass
         self._call_count += 1
         if self._call_count % 20 == 0:
             self._connect()
@@ -712,6 +740,11 @@ class DataEngine:
             df['ma_spread'] = (df['ma5'] - df['ma20']).abs() / df['close'] * 100
             df['gain_60d'] = df['close'].pct_change(60) * 100
             if len(df) >= 2 and df.iloc[-1][vc] < df[vc].tail(20).mean() * 0.05: df = df.iloc[:-1]
+            if code:
+                try:
+                    df.to_pickle(self._cache_path(code))
+                except:
+                    pass
             return df
         except: return None
     
@@ -759,7 +792,8 @@ def get_fcx_change() -> float:
 # ════════════════════════════════════════════════════════
 # 模块3.8：信号追踪器（记录/回溯信号表现）
 # ════════════════════════════════════════════════════════
-CACHE_DIR = Path("/app/cache") if Path("/app/cache").exists() else Path(__file__).parent / "cache"
+CACHE_DIR = Path("/app/cache") if Path("/app/cache").exists() else (Path(__file__).parent / "cache")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 SIGNAL_LOG_PATH = CACHE_DIR / "signal_log.json"
 
 def load_signal_log() -> dict:
