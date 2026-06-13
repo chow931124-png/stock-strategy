@@ -1283,6 +1283,16 @@ class WeChatNotifier:
         lines.append(f"【A股策略{mode_tag} {datetime.now().strftime('%m/%d %H:%M')}】")
         lines.append(f"🌡️ {temp}°  仓位 {pos_pct:.0f}%")
         lines.append(f"🏆\n  {sectors_str}")
+        # ── 信号概览 ──
+        tiers_count = Counter(r["tier"] for r in results)
+        elite_n = tiers_count.get("💎 精选层", 0)
+        enhanced_n = tiers_count.get("🥈 增强层", 0)
+        normal_n = tiers_count.get("🥉 普通层", 0)
+        parts = []
+        if elite_n: parts.append(f"💎{elite_n}")
+        if enhanced_n: parts.append(f"🥈{enhanced_n}")
+        parts.append(f"🥉{normal_n}")
+        lines.append(f"📈 {'+'.join(parts)}={len(results)}个")
         lines.append("")
 
         # ── 重点 TOP 3 ──
@@ -1307,7 +1317,7 @@ class WeChatNotifier:
             if r.get('short_score', 0) >= 50: extras.append(f"⚡{r['short_score']}")
             lines.append(line)
             stop_str = f"止损-{r.get('atr_stop_pct', 0.08)*100:.0f}%"
-            lines.append(f"  仓位{kp:.0f}% {stop_str} {' '.join(extras)}")
+            lines.append(f"  仓位{kp:.0f}% {stop_str} +10%后回撤6% {' '.join(extras)}")
         lines.append("")
 
         # ── 全市场扫描 ──
@@ -1365,7 +1375,11 @@ class WeChatNotifier:
 
         lines.append("")
         lines.append(f"---")
-        lines.append(f"**🛑 仓位**: {market_info.get('position_limit',1)*100:.0f}% | 仅供参考，不构成投资建议")
+        if results:
+            avg_stop = sum(r.get('atr_stop_pct', 0.08) for r in results) / len(results)
+            lines.append(f"🛑 止损ATR({avg_stop*100:.0f}%均值) 移动止盈+10%回撤6% 持有20日 仓位{market_info.get('position_limit',1)*100:.0f}%")
+        else:
+            lines.append(f"🛑 仓位: {market_info.get('position_limit',1)*100:.0f}% | 仅供参考，不构成投资建议")
 
         content = "\n".join(lines)
 
