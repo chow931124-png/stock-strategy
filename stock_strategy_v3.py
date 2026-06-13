@@ -640,9 +640,6 @@ class DataEngine:
                 time.sleep(0.5)
         return False
 
-    def _cache_path(self, code: str) -> Path:
-        return KLINES_CACHE_DIR / f"{code}.pkl"
-
     def get_klines(self, code: str) -> Optional[pd.DataFrame]:
         """获取K线，磁盘缓存优先→mootdx→HTTP备用"""
         today = datetime.now().strftime("%Y-%m-%d")
