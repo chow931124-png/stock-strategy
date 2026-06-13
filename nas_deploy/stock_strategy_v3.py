@@ -1254,18 +1254,20 @@ class WeChatNotifier:
         self.sckey = NOTIFY_CONFIG["serverchan_key"]
         self.dingtalk = NOTIFY_CONFIG["dingtalk_webhook"]
 
-    def _should_push(self) -> bool:
+    def _should_push(self, force=False) -> bool:
         now = datetime.now()
         start, end = NOTIFY_CONFIG["push_window"]
+        if force:
+            return True
         if not (start <= now.hour < end): return False
         if now.weekday() >= 5: return False
         return True
 
-    def notify(self, results: list, market_info: dict, sector_info: dict, mode: str = "", all_results: list = None):
+    def notify(self, results: list, market_info: dict, sector_info: dict, mode: str = "", all_results: list = None, force_push: bool = False):
         if not results:
             print("  [通知] 无信号，跳过")
             return
-        if not self._should_push():
+        if not self._should_push(force=force_push):
             print("  [通知] 非推送时段，跳过")
             return
 
@@ -1669,6 +1671,7 @@ def main():
     parser.add_argument("--debug", action="store_true", help="输出详细评分")
     parser.add_argument("--codes", type=str, help="指定股票代码")
     parser.add_argument("--quiet", action="store_true", help="安静模式")
+    parser.add_argument("--force-push", action="store_true", help="强制推送(跳过周末/时间检查)")
     parser.add_argument("--mode", type=str, default="",
                         help="推送模式: morning(早报)/lunch(午盘)/close(收盘)/night(复盘)")
     args = parser.parse_args()
@@ -2166,7 +2169,7 @@ def main():
             "position_limit": pos_limit,
         }
         sector_info = {"top": top_sectors}
-        notifier.notify(results, market_info, sector_info, mode=args.mode, all_results=all_results)
+        notifier.notify(results, market_info, sector_info, mode=args.mode, all_results=all_results, force_push=getattr(args, 'force_push', False))
 
 
 if __name__ == "__main__":
