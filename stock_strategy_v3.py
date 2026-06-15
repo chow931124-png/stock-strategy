@@ -45,8 +45,8 @@ NOTIFY_CONFIG = {
 # ════════════════════════════════════════════════════════
 STRATEGY = {
     "base": {"drawdown_min": 5, "drawdown_max": 35, "vol_ratio_min": 1.3, "ma_period": "ma5", "lookback_peak": 60},
-    "enhanced": {"atr_min": 3.0, "atr_max": 999},
-    "elite": {"bias_ma20_max": -2, "atr_min": 3.0, "atr_max": 999},
+    "enhanced": {"atr_min": 5.0, "atr_max": 8.0},
+    "elite": {"bias_ma20_max": -3, "atr_min": 5.0, "atr_max": 8.0},
     "ambush": {
         "amplitude_min": 10, "amplitude_max": 30,
         "ma_spread_max": 15,
@@ -2064,7 +2064,8 @@ def main():
             wins = sum(1 for t in tracking if t["is_win"])
             total = len(tracking)
             avg_ret = sum(t["change_pct"] for t in tracking) / total
-            print(f"\n📊 昨日信号追踪（{yesterday}）:")
+            _yesterday = (datetime.now() - timedelta(days=1)).strftime("%m/%d")
+            print(f"\n📊 昨日信号追踪（{_yesterday}）:")
             print(f"{'信号':25s} {'推时价':>8s} {'现价':>8s} {'涨跌':>8s} {'盈亏':>6s} {'仓位':>6s}")
             print("-" * 65)
             for t in tracking:
