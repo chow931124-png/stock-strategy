@@ -1,5 +1,59 @@
 {% extends "base.html" %}
-{% block title %}总览 — 究极选股{% endblock %}
+{% block title %}总览 — 究极选股
+<script>
+// ── 扫描进度轮询 ──
+let scanPollTimer = null;
+document.querySelectorAll('.scan-form').forEach(function(form) {
+    form.addEventListener('submit', function(e) {
+        e.preventDefault();
+        var btn = form.querySelector('button');
+        var mode = form.getAttribute('data-mode');
+        var progress = document.getElementById('scan-progress');
+        if (!progress) return;
+        progress.style.display = 'block';
+        document.getElementById('progress-bar').style.width = '5%';
+        document.getElementById('progress-step').textContent = '启动扫描 ('+mode+')...';
+        document.getElementById('progress-pct').textContent = '5%';
+        btn.disabled = true;
+        btn.textContent = '⏳';
+        fetch('/api/run-scan', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'mode='+encodeURIComponent(mode)
+        }).then(function(r) {
+            if (r.ok) window.location.href = '/';
+        }).catch(function(e) {
+            console.error(e);
+            btn.disabled = false;
+            btn.textContent = mode==='auto'?'🔍 全量':(mode==='fast'?'⚡ 快扫':(mode==='close'?'🟢 尾盘':'📊 复盘'));
+        });
+        if (scanPollTimer) clearInterval(scanPollTimer);
+        scanPollTimer = setInterval(function() {
+            fetch('/api/scan-progress').then(function(r){return r.json()}).then(function(d) {
+                if (d.step) document.getElementById('progress-step').textContent = d.step;
+                if (d.pct >= 0) {
+                    document.getElementById('progress-bar').style.width = Math.min(100, d.pct)+'%';
+                    document.getElementById('progress-pct').textContent = d.pct+'%';
+                }
+                if (d.detail) document.getElementById('progress-detail').textContent = d.detail;
+                if (!d.running) {
+                    clearInterval(scanPollTimer);
+                    scanPollTimer = null;
+                    if (d.done) {
+                        document.getElementById('progress-step').textContent = '完成 ✓';
+                        document.getElementById('progress-bar').style.width = '100%';
+                        setTimeout(function(){ progress.style.display = 'none'; }, 3000);
+                    }
+                    btn.disabled = false;
+                    btn.textContent = mode==='auto'?'🔍 全量':(mode==='fast'?'⚡ 快扫':(mode==='close'?'🟢 尾盘':'📊 复盘'));
+                }
+            }).catch(function(){});
+        }, 1000);
+    });
+});
+</script>
+
+{% endblock %}
 {% block content %}
 
 {% set regime_label = {"BULL":"🌞 偏多","SIDEWAYS":"☁️ 震荡","BEAR":"🌧 偏空","CRISIS":"⛈ 危险"} %}
@@ -397,5 +451,59 @@
     </div>
 </div>
 {% endif %}
+
+
+<script>
+// ── 扫描进度轮询 ──
+let scanPollTimer = null;
+document.querySelectorAll('.scan-form').forEach(function(form) {
+    form.addEventListener('submit', function(e) {
+        e.preventDefault();
+        var btn = form.querySelector('button');
+        var mode = form.getAttribute('data-mode');
+        var progress = document.getElementById('scan-progress');
+        if (!progress) return;
+        progress.style.display = 'block';
+        document.getElementById('progress-bar').style.width = '5%';
+        document.getElementById('progress-step').textContent = '启动扫描 ('+mode+')...';
+        document.getElementById('progress-pct').textContent = '5%';
+        btn.disabled = true;
+        btn.textContent = '⏳';
+        fetch('/api/run-scan', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'mode='+encodeURIComponent(mode)
+        }).then(function(r) {
+            if (r.ok) window.location.href = '/';
+        }).catch(function(e) {
+            console.error(e);
+            btn.disabled = false;
+            btn.textContent = mode==='auto'?'🔍 全量':(mode==='fast'?'⚡ 快扫':(mode==='close'?'🟢 尾盘':'📊 复盘'));
+        });
+        if (scanPollTimer) clearInterval(scanPollTimer);
+        scanPollTimer = setInterval(function() {
+            fetch('/api/scan-progress').then(function(r){return r.json()}).then(function(d) {
+                if (d.step) document.getElementById('progress-step').textContent = d.step;
+                if (d.pct >= 0) {
+                    document.getElementById('progress-bar').style.width = Math.min(100, d.pct)+'%';
+                    document.getElementById('progress-pct').textContent = d.pct+'%';
+                }
+                if (d.detail) document.getElementById('progress-detail').textContent = d.detail;
+                if (!d.running) {
+                    clearInterval(scanPollTimer);
+                    scanPollTimer = null;
+                    if (d.done) {
+                        document.getElementById('progress-step').textContent = '完成 ✓';
+                        document.getElementById('progress-bar').style.width = '100%';
+                        setTimeout(function(){ progress.style.display = 'none'; }, 3000);
+                    }
+                    btn.disabled = false;
+                    btn.textContent = mode==='auto'?'🔍 全量':(mode==='fast'?'⚡ 快扫':(mode==='close'?'🟢 尾盘':'📊 复盘'));
+                }
+            }).catch(function(){});
+        }, 1000);
+    });
+});
+</script>
 
 {% endblock %}

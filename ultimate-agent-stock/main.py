@@ -164,16 +164,27 @@ async def cmd_briefing(args):
 
 # ── 选股扫描 ──────────────────────────────────────
 async def cmd_scan(args):
+    # ── 进度报告（供 Web 轮询） ──
+    def _report(step, pct, detail=""):
+        try:
+            pf = Path(__file__).parent / "data_store" / "scan_progress.json"
+            pf.parent.mkdir(parents=True, exist_ok=True)
+            pf.write_text(json.dumps({"step": step, "pct": pct, "detail": detail}))
+        except Exception:
+            pass
+
     print("🔍 正在执行全市场选股扫描...\n")
 
     # Phase 1: 市场状态检测
+    _report("市场状态检测", 5)
     print("  📊 检测市场状态...")
     from phase1_scan.market_regime import detect_market_regime
     regime = detect_market_regime()
     print(f"     市场温度: {regime.get('temperature', 50)}/100")
     print(f"     市场状态: {regime.get('regime', '?')}")
 
-    # 🔥 全市场实时扫描（取代固定45只池）
+    # 🔥 全市场实时扫描
+    _report("全市场初筛", 10)
     print("  🔎 实时全市场扫描（排除 688/300/ST/低价/低成交）...")
     from data.market_scanner import scan_full_market
     candidates = scan_full_market(min_price=5, min_amount_wan=5000, max_stocks=300)
@@ -185,6 +196,7 @@ async def cmd_scan(args):
         print(f"     基础候选池: {len(candidates)} 只")
 
     # iwencai 动态扩展
+    _report("iwencai扩展", 15)
     print("  🚀 iwencai 全市场扫描...")
     from phase1_scan.screeners.iwencai_screener import IwencaiScreener
     iwencai = IwencaiScreener()
@@ -193,7 +205,8 @@ async def cmd_scan(args):
     expanded_pool = list(set(candidates + iwencai_codes))
     print(f"     iwencai新增: {len(iwencai_codes)} 只 (总候选: {len(expanded_pool)} 只)")
 
-    # 运行所有扫描器（使用扩展后的池）
+    # 运行所有扫描器
+    _report("运行扫描器", 20)
     print("  🏃 运行扫描器...")
     from phase1_scan.screeners.pullback_screener import PullbackScreener
     from phase1_scan.screeners.breakout_screener import BreakoutScreener
@@ -248,8 +261,10 @@ async def cmd_scan(args):
     print(f"     MomentumScreener:  {len(mo_selected)} 只")
     print(f"     THSHotScreener:    {len(ths_selected)} 只")
     print(f"     AmbushScreener:    {len(am_selected)} 只")
+    _report("扫描器完成", 35, f"候选{len(ths_selected)+len(pb_selected)+len(br_selected)+len(mo_selected)+len(am_selected)+len(trader_selected)}只")
 
     # 合并候选池（去重 + 🚫 硬排688/300）
+    _report("合并候选池", 40)
     from data.reference_data import is_excluded_board
     raw_pool = set(pb_selected + br_selected + mo_selected + ths_selected + am_selected + trader_selected + iwencai_codes)
     pool = [c for c in raw_pool if not is_excluded_board(c)]
@@ -260,6 +275,7 @@ async def cmd_scan(args):
 
     # 🔥 题材归因匹配
     print("  🏷️ 题材归因匹配...")
+    _report("题材归因", 45)
     from data.theme_matcher import ThemeMatcher
     matcher = ThemeMatcher()
     matcher.update_from_ths()
@@ -302,6 +318,7 @@ async def cmd_scan(args):
         item["theme_score"] = theme_scores.get(code, 0)
 
     # Phase 3: 三框架选股
+    _report("三框架评分", 55)
     print("\n  📋 三框架选股评分...")
     from data.market_data import tencent_quote
     from phase3_portfolio.three_frame_scorer import ThreeFrameScorer
@@ -338,6 +355,7 @@ async def cmd_scan(args):
         pass
 
     # 🔬 LLM 分析师验证（按优先级调用）
+    _report("分析师验证", 75)
     print("\n  🔬 LLM 分析师验证...")
     try:
         top_codes = []
@@ -377,6 +395,7 @@ async def cmd_scan(args):
         print("     （分析师调用跳过）")
 
     # 记录到信号回溯系统 + 更新历史推荐表现
+    _report("保存结果", 90)
     try:
         from self_learn.signal_tracker import record_scan, update_tracking
         n = record_scan(portfolio, regime)
@@ -386,6 +405,7 @@ async def cmd_scan(args):
         pass
 
     # 持久化选股结果到文件（供 Web 读取）
+    _report("持久化", 95)
     try:
         import json
         from pathlib import Path
@@ -436,6 +456,7 @@ async def cmd_scan(args):
     except Exception:
         pass
 
+    _report("完成", 100, "")
     return portfolio
 
 
