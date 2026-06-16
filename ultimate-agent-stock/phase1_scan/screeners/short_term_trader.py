@@ -247,7 +247,7 @@ class ShortTermTrader(BaseScreener):
             "mode": "短线猎手",  # 兼容web
             # 题材因子
             "in_hot_code": code in hot_codes,
-            "hot_match_count": sum(1 for _, c in hot_codes if code == c) if False else (1 if code in hot_codes else 0),
+            "hot_match_count": 1 if code in hot_codes else 0,
             # 资金因子（原始值）
             "big_net": big_net,
             "last30_dir": last30_dir,
