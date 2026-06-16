@@ -2,6 +2,9 @@
 # A股策略 · 容器启动脚本
 # 自动配置mootdx + 启动定时任务
 
+echo "=== 从 GitHub 拉取最新代码 ==="
+python3 -c "import urllib.request; urllib.request.urlretrieve('https://raw.githubusercontent.com/chow931124-png/stock-strategy/main/nas_deploy/stock_strategy_v3.py', '/app/stock_strategy_v3.py')" 2>/dev/null && echo "✅ 代码已更新" || echo "⚠️ 拉取失败，使用本地缓存"
+
 echo "=== 启动依赖检查 ==="
 python3 -c "from mootdx.quotes import Quotes" 2>/dev/null || pip install --no-cache-dir mootdx requests pandas numpy fake_useragent
 
