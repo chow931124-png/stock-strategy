@@ -1389,9 +1389,10 @@ class WeChatNotifier:
 
         content = "\n".join(lines)
 
-        # 推送：Server酱
         title_prefix = mode_label
         pushed = False
+
+        # 推送：Server酱
         if self.sckey:
             try:
                 r = requests.post(f"https://sctapi.ftqq.com/{self.sckey}.send",
