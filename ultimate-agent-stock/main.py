@@ -205,6 +205,12 @@ async def cmd_scan(args):
     expanded_pool = list(set(candidates + iwencai_codes))
     print(f"     iwencai新增: {len(iwencai_codes)} 只 (总候选: {len(expanded_pool)} 只)")
 
+    # K线预加载（一次拉完，各扫描器复用，避免2100次重复调用）
+    _report("K线预加载", 17)
+    from data.kline_cache import preload_klines
+    print("  📦 K线预加载...")
+    preload_klines(expanded_pool, category=4, offset=60)
+
     # 运行所有扫描器
     _report("运行扫描器", 20)
     print("  🏃 运行扫描器...")

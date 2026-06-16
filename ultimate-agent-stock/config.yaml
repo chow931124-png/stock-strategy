@@ -1,0 +1,117 @@
+# ultimate-agent-stock 主配置
+# 注意: 敏感信息（API keys）放在 .env 中，不要提交到 git
+
+app:
+  name: "ultimate-agent-stock"
+  version: "0.1.0"
+  debug: false
+
+# ── 数据源配置 ──────────────────────────────────────
+data:
+  em_min_interval: 3.0  # 东财请求最小间隔(秒)，批量时建议 1.5-2.0
+  cache_dir: "data_store/cache"
+  cache_ttl_days: 3     # K线缓存有效期
+
+# ── LLM 配置 ───────────────────────────────────────
+llm:
+  provider: "openai"     # openai-compatible (DeepSeek)
+  api_base: "https://api.deepseek.com/v1"
+  model: "deepseek-chat"
+  temperature: 0.3       # 分析类任务用低温，追求确定性
+  max_tokens: 4096
+  # API key 从环境变量读取: ULTIMATE_STOCK_LLM_API_KEY
+
+# ── 选股策略 ──────────────────────────────────────
+screening:
+  pre_filter:
+    exclude_boards: ["688", "300"]  # 排除科创板、创业板
+    exclude_st: true
+    min_volume: 50000000    # 最低日成交额 5000万
+    min_price: 5.0          # 最低股价
+    min_trading_days: 60    # 最少上市天数
+
+  market_regime:
+    limit_up_down_weight: 0.30
+    up_ratio_weight: 0.25
+    northbound_weight: 0.25
+    margin_weight: 0.20
+
+  # 扫描器参数
+  pullback:
+    drawdown_min: 0.05
+    drawdown_max: 0.35
+    volume_ratio: 1.3
+    atr_min: 0.04
+
+  breakout:
+    volume_ratio: 1.8
+    macd_bullish: true
+
+  value:
+    pe_percentile_max: 30
+    roe_min: 0.12
+
+  growth:
+    revenue_growth_min: 0.20
+    peg_max: 1.5
+
+  momentum:
+    rsi_min: 50
+    rsi_max: 70
+
+# ── 三框架评分权重 ────────────────────────────────
+# factor权重: trend(趋势) volume(量价) sentiment(情绪) fund(基本面) divergence(价量背离)
+scoring:
+  short_term:
+    factors:
+      trend: 0.35
+      volume: 0.30
+      sentiment: 0.25
+      divergence: 0.10
+    mcap_penalty: 10        # 大盘股扣分阀值(亿)和分
+    min_score: 55
+    max_stocks: 2
+    # 因子原始值取自 _compute_dimensions 中的 trend/volume/sentiment/divergence_adj
+
+  medium_term:
+    factors:
+      trend: 0.25
+      volume: 0.20
+      sentiment: 0.20
+      fund: 0.20
+      divergence: 0.15
+    min_score: 55
+    max_stocks: 3
+
+  long_term:
+    factors:
+      fund: 0.40
+      trend: 0.15
+      volume: 0.10
+      sentiment: 0.10
+    market_cap_weight: 0.25
+    min_score: 60
+    max_stocks: 1
+
+# ── 风险管理 ──────────────────────────────────────
+risk:
+  max_positions: 8
+  max_sector_pct: 0.30
+  max_single_pct: 0.25
+  stop_loss_pct: -0.08
+  take_profit_pct: 0.15
+  target_volatility: 0.25     # 波动率调节器目标波动率
+  min_market_temp: 30         # 低于此温度禁止开新仓
+
+# ── 信号分级推送 ──────────────────────────────────
+push:
+  wechat:
+    enabled: true
+    min_level: "B"           # B级及以上推微信
+    # ServerChan key 从环境变量读取: ULTIMATE_STOCK_SERVERCHAN_KEY
+  # dingtalk:  # 暂未配置，待用户提供新 token
+
+# ── 自学习 ────────────────────────────────────────
+self_learn:
+  trade_db: "data_store/trade_log.db"
+  calibrate_interval_days: 60

@@ -3,6 +3,7 @@
 数据源优先级: mootdx(TCP) > 腾讯(HTTP) > 东财/百度(HTTP)
 """
 import time
+import threading
 import random
 import requests
 from typing import Optional
@@ -17,19 +18,21 @@ _em_session.headers.update({
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 })
 _em_last_call = [0.0]
+_em_lock = threading.Lock()
 
 # ── 东财限流请求 ──────────────────────────────────
 def em_get(url: str, params: dict = None, headers: dict = None, timeout: int = 15, **kwargs):
     """东财统一请求入口：自动节流 + 复用 session（从 a-stock-data 移植）"""
     cfg = get_config()
     min_interval = cfg.get("data", {}).get("em_min_interval", 3.0)
-    wait = min_interval - (time.time() - _em_last_call[0])
-    if wait > 0:
-        time.sleep(wait + random.uniform(0.1, 0.5))
-    try:
-        return _em_session.get(url, params=params, headers=headers, timeout=timeout, **kwargs)
-    finally:
-        _em_last_call[0] = time.time()
+    with _em_lock:
+        wait = min_interval - (time.time() - _em_last_call[0])
+        if wait > 0:
+            time.sleep(wait + random.uniform(0.1, 0.5))
+        try:
+            return _em_session.get(url, params=params, headers=headers, timeout=timeout, **kwargs)
+        finally:
+            _em_last_call[0] = time.time()
 
 
 def _get_mootdx():
@@ -58,10 +61,17 @@ def normalize_code(code: str) -> str:
 def get_bars(code: str, category: int = 4, offset: int = 120) -> list:
     """
     获取 K 线数据
-    主: mootdx TCP → 备1: 腾讯ifzq → 备2: 百度
+    主: MEM缓存(预加载用) → mootdx TCP → 备1: 腾讯ifzq → 备2: 百度
 
     category: 4=日线, 其他暂不支持fallback
     """
+    # ── 检查预加载缓存（preload_klines 存入 MEM） ──
+    mem_key = f"bars:{code}:{category}:{offset}"
+    from data.cache import MEM as _mem  # avoid circular import
+    cached = _mem.get(mem_key)
+    if cached is not None:
+        return cached
+
     # ── 主：mootdx TCP ──
     if category == 4:
         client = _get_mootdx()

@@ -291,13 +291,23 @@ class ThreeFrameScorer:
         except Exception:
             pass
 
-        # ─── 三框架原始分 ───
-        # 短期 = 趋势0.35 + 量价0.30 + 情绪0.25 + 背离0.10 - 市惩0.10
-        raw_short = trend * 0.35 + volume * 0.30 + sentiment * 0.25 + divergence_adj - mcap_pe
-        # 中期 = 趋势0.25 + 量价0.20 + 情绪0.20 + 基本面0.20 + 背离0.15
-        raw_med = trend * 0.25 + volume * 0.20 + sentiment * 0.20 + fund_score * 0.20 + divergence_adj
-        # 长期 = 基本面0.40 + 趋势0.15 + 量价0.10 + 情绪0.10 + 市值0.25
-        raw_long = fund_score * 0.40 + trend * 0.15 + volume * 0.10 + sentiment * 0.10
+        # ─── 三框架原始分（权重从config.yaml读取） ───
+        def _weighted_sum(frame_cfg, factor_map):
+            factors = frame_cfg.get("factors", {})
+            total = 0
+            for name, weight in factors.items():
+                val = factor_map.get(name, 0)
+                total += val * weight
+            return total
+
+        short_factors = {"trend": trend, "volume": volume, "sentiment": sentiment, "divergence": divergence_adj}
+        raw_short = _weighted_sum(self.short_cfg, short_factors) - mcap_pe
+
+        med_factors = {"trend": trend, "volume": volume, "sentiment": sentiment, "fund": fund_score, "divergence": divergence_adj}
+        raw_med = _weighted_sum(self.med_cfg, med_factors)
+
+        long_factors = {"trend": trend, "volume": volume, "sentiment": sentiment, "fund": fund_score}
+        raw_long = _weighted_sum(self.long_cfg, long_factors)
 
         return {
             "code": code, "name": name, "price": current,
