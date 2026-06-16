@@ -36,9 +36,23 @@ class ShortTermTrader(BaseScreener):
     # ──────────────────────────────────────────────
     #  主流程
     # ──────────────────────────────────────────────
-    async def screen(self, candidates: list[str], market_context: dict) -> list[str]:
+    async def screen(self, candidates: list[str], market_context: dict, mode: str = "close") -> list[str]:
+        """
+        执行短线猎手扫描
+
+        参数:
+            candidates: 候选股票代码列表
+            market_context: 市场上下文
+            mode: "fast"(盘中快扫，不调资金流) | "close"(尾盘/收盘全量)
+        """
         regime = market_context.get("regime", "SIDEWAYS")
         temp = market_context.get("temperature", 50)
+
+        # 如果 main.py 已经设置了 _scan_mode（通过 trader._scan_mode=），用它
+        if hasattr(self, "_scan_mode") and self._scan_mode in ("fast", "close", "scan"):
+            mode = self._scan_mode
+        else:
+            self._scan_mode = mode
 
         # 冷市不出手
         if regime == "CRISIS":
@@ -74,7 +88,7 @@ class ShortTermTrader(BaseScreener):
         report_interval = max(1, total // 10)  # 每10%报告一次
         for i, code in enumerate(candidates):
             try:
-                result = self._evaluate(code, hot_themes, hot_codes, tiger_map, regime, temp, batch_quotes)
+                result = self._evaluate(code, hot_themes, hot_codes, tiger_map, regime, temp, batch_quotes, mode)
                 if result:
                     all_scored.append(result)
             except Exception:
@@ -126,7 +140,7 @@ class ShortTermTrader(BaseScreener):
     # ──────────────────────────────────────────────
     #  第1阶段：单只股票原始因子采集
     # ──────────────────────────────────────────────
-    def _evaluate(self, code, hot_themes, hot_codes, tiger_map, regime, temp, pre_quotes=None):
+    def _evaluate(self, code, hot_themes, hot_codes, tiger_map, regime, temp, pre_quotes=None, mode="close"):
         """返回原始因子值，所有评分在后续阶段完成"""
         # 优先使用预取行情，没有再单独拉
         if pre_quotes and code in pre_quotes:
@@ -210,8 +224,8 @@ class ShortTermTrader(BaseScreener):
         tiger_info = tiger_map.get(code, {})
         tiger_net = tiger_info.get("net_buy", 0) if tiger_info else 0
 
-        # ── 资金流 ──
-        flow = stock_fund_flow_120d(code)
+        # ── 资金流（fast模式跳过，省时间） ──
+        flow = stock_fund_flow_120d(code) if mode != "fast" else None
         net_3d = 0
         if flow and len(flow) >= 3:
             net_3d = sum(f["main_net"] for f in flow[-3:])
@@ -453,11 +467,30 @@ class ShortTermTrader(BaseScreener):
         max_picks = max(1, min(8, len(eligible) // 2 + 1))
 
         selected = eligible[:max_picks]
-        # 兼容旧字段（main.py 推送 + web展示用）
+        # 判断当前时段
+        now = datetime.now()
+        hour = now.hour
+        is_after_market = hour >= 15
+        is_late_afternoon = 13 <= hour < 15
+        is_midday = 9 <= hour < 13
+
+        # 根据模式+时间决定建议文案
+        mode = getattr(self, "_scan_mode", "close")
         for s in selected:
             s["score"] = int(s["final_score"])
-            s["entry_advice"] = "尾盘买入" if s["final_score"] >= 65 else ("次日开盘" if s["final_score"] >= 58 else "观察")
-            s["position_pct"] = f"{8 if s['final_score']>=65 else 5}%"
+            if mode == "fast":
+                s["entry_advice"] = "盘中异动"
+                s["position_pct"] = "5%"
+            elif is_after_market:
+                s["entry_advice"] = "明日观察"
+                s["position_pct"] = "—"
+            elif is_late_afternoon:
+                s["entry_advice"] = "尾盘买入" if s["final_score"] >= 58 else ("明日观察" if s["final_score"] >= 48 else "观望")
+                s["position_pct"] = f"{max(3, min(8, s['final_score'] // 10))}%"
+            else:  # 早盘/中午
+                s["entry_advice"] = "盘中观察" if s["final_score"] >= 55 else "跟踪"
+                s["position_pct"] = "—"
+            s["scan_mode"] = mode
             # reasons / risks 给web展示
             s["reasons"] = []
             if s.get("in_hot_code"): s["reasons"].append("🔥今日强势")
