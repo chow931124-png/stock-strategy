@@ -1,25 +1,26 @@
 version: '3.8'
 services:
-  stock-strategy:
+  stock-scan:
     image: python:3.10
-    container_name: a-stock-strategy
+    container_name: a-stock-scan
     restart: unless-stopped
     volumes:
-      # 整个项目文件夹（脚本+缓存+配置都在这里）
       - ./stock_strategy_v3.py:/app/stock_strategy_v3.py
       - ./cache:/app/cache
+      - ./.tradingagents:/root/.tradingagents
     environment:
       - SERVERCHAN_KEY=${SERVERCHAN_KEY}
       - DINGTALK_WEBHOOK=${DINGTALK_WEBHOOK}
       - NOTIFY_LEVEL=all
       - TZ=Asia/Shanghai
+    working_dir: /app
     command: >
       sh -c "
       pip install --no-cache-dir mootdx requests pandas numpy fake_useragent &&
+      mkdir -p /root/.mootdx &&
+      cat > /root/.mootdx/config.json << 'MCFG'
+{\"SERVER\":{\"HQ\":[[\"深圳\",\"110.41.147.114\",7709],[\"上海\",\"124.70.176.52\",7709]]},\"BESTIP\":{\"HQ\":[\"110.41.147.114\",7709],\"EX\":\"\",\"GP\":\"\"}}
+MCFG
       echo '✅ 依赖安装完成，容器运行中' &&
-      python3 /app/stock_strategy_v3.py --wechat --quiet --mode morning &&
-      python3 /app/stock_strategy_v3.py --wechat --quiet --mode lunch &&
-      python3 /app/stock_strategy_v3.py --wechat --quiet --mode close &&
-      python3 /app/stock_strategy_v3.py --wechat --quiet --mode night &&
       tail -f /dev/null
       "

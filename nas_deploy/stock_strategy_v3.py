@@ -1808,6 +1808,7 @@ def main():
     de = DataEngine()
     stock_scorer = StockScorer()
     results = []
+    all_scanned = []
     skipped_st = 0
     skipped_low_liquidity = 0
 
@@ -1851,6 +1852,21 @@ def main():
         sec_score = sector_scores.get(sector, 50)
         score_result = stock_scorer.score(row, sec_score)
 
+        # 记录所有扫描过的股票（用于突破观察）
+        short_score = 0
+        short_reasons = ""
+        short_info = stock_scorer.calc_short_term(row, sec_score)
+        if short_info:
+            short_score = short_info.get("short_score", 0)
+            short_reasons = short_info.get("short_reasons", "")
+        all_scanned.append({
+            "code": code, "name": quote.get("name", name) or code,
+            "sector": sector, "sector_score": sec_score,
+            "short_score": short_score, "short_reasons": short_reasons,
+            "price": row["close"], "tier": "无信号",
+            "vol_ratio": row["vol_ratio_20"], "atr_ratio": row["atr_ratio"],
+        })
+
         if score_result:
             composite = score_result["composite"]
             # 温度低时提高入选门槛
@@ -1884,7 +1900,7 @@ def main():
                 "atr_stop_pct": score_result.get("atr_stop_pct", 0.08),
             })
 
-        if not args.quiet and not args.quiet:
+        if not args.quiet:
             progress = f"[{i+1}/{len(stock_list)}]"
             status = f"✅ {score_result['tier']} 综合{score_result['composite']}" if score_result else "无信号"
             if score_result and score_result["tier"] in ("💎 精选层", "🥈 增强层"):
@@ -1952,7 +1968,14 @@ def main():
     results.sort(key=lambda r: -r.get("final_sort", r["composite"]))
 
     # ── 保存全量结果用于分析，再过滤出推荐信号 ──
-    all_results = list(results)  # 备份给短线/涨停/埋伏/漏网之鱼分析用
+    all_results = list(results)
+    # 合并有短线突破信号的非信号股（用于热门板块突破观察）
+    result_codes = {r['code'] for r in all_results}
+    for s in all_scanned:
+        if s['code'] not in result_codes and s['short_score'] >= 50:
+            all_results.append(s)
+    # 短线信号榜也从all_results取
+
     old_count = len(results)
     results = portfolio_risk_filter(results, max_total_positions=8)
     if len(results) < old_count:
@@ -2018,6 +2041,20 @@ def main():
                       f"短线{r['short_score']}分 | {reasons}")
             print(f"  📌 放量突破+MACD金叉+板块共振，短线机会")
 
+        # ── 热门板块突破观察（板块评分≥80的强势突破补充）──
+        hot_breakout = []
+        for r in all_results:
+            if r.get('sector_score', 0) >= 80 and r.get('short_score', 0) >= 60:
+                if r['tier'] == "无信号":
+                    hot_breakout.append(r)
+        if hot_breakout:
+            print(f"\n🔥 热门板块突破观察（板块评分≥80 | 强势不回调品种）:")
+            for r in sorted(hot_breakout, key=lambda x: -x['short_score'])[:5]:
+                reasons = r.get('short_reasons', '')
+                print(f"  ⚡ {r['name']}({r['code']}) [{r['sector']}] "
+                      f"短线{r['short_score']}分 | {reasons}")
+            print(f"  📌 热门板块强势突破，不等回调直接关注")
+
         # ── 涨停质量分析 TOP3（基于全量信号）──
         surge_top = sorted(all_results, key=lambda r: -r.get('surge_score', {}).get('score', 0))[:3]
         if surge_top and surge_top[0].get('surge_score', {}).get('score', 0) >= 30:
@@ -2064,7 +2101,8 @@ def main():
             wins = sum(1 for t in tracking if t["is_win"])
             total = len(tracking)
             avg_ret = sum(t["change_pct"] for t in tracking) / total
-            print(f"\n📊 昨日信号追踪（{yesterday}）:")
+            _yesterday = (datetime.now() - timedelta(days=1)).strftime("%m/%d")
+            print(f"\n📊 昨日信号追踪（{_yesterday}）:")
             print(f"{'信号':25s} {'推时价':>8s} {'现价':>8s} {'涨跌':>8s} {'盈亏':>6s} {'仓位':>6s}")
             print("-" * 65)
             for t in tracking:
