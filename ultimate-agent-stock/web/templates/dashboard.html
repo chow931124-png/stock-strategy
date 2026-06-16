@@ -1,0 +1,401 @@
+{% extends "base.html" %}
+{% block title %}总览 — 究极选股{% endblock %}
+{% block content %}
+
+{% set regime_label = {"BULL":"🌞 偏多","SIDEWAYS":"☁️ 震荡","BEAR":"🌧 偏空","CRISIS":"⛈ 危险"} %}
+{% set regime_cls = {"BULL":"bull","SIDEWAYS":"sideways","BEAR":"bear","CRISIS":"crisis"} %}
+{% set temp = regime.temperature|default(50) %}
+{% set gauge_color = "#ef4444" if temp >= 60 else "#fbbf24" if temp >= 40 else "#22c55e" %}
+
+<!-- ═══ 状态栏 ═══ -->
+<div class="status-bar">
+    <span class="status-regime {{ regime_cls.get(regime.regime,'sideways') }}">
+        {{ regime_label.get(regime.regime, '☁️ 震荡') }}
+    </span>
+    <div style="display:flex; align-items:center; gap:8px;">
+        <span style="font-size:12px; color:var(--text-muted);">温度</span>
+        <div class="gauge"><div class="gauge-fill" style="width:{{ temp }}%;background:{{ gauge_color }};"></div></div>
+        <span style="font-weight:700; font-size:14px; color:{{ gauge_color }};">{{ temp }}°</span>
+    </div>
+    <div class="status-actions">
+        <form action="/api/run-briefing" method="post" style="display:inline;">
+            <button class="btn btn-ghost btn-loading" type="submit">📰 简报</button>
+        </form>
+        <form action="/api/run-scan" method="post" style="display:inline;">
+            <button class="btn btn-primary btn-loading" type="submit">🔍 选股扫描</button>
+        </form>
+        <form action="/api/push-dingtalk" method="post" style="display:inline;">
+            <button class="btn btn-ghost btn-loading" type="submit">📲 钉钉</button>
+        </form>
+    </div>
+</div>
+
+<!-- ═══ 三列速览 ═══ -->
+<div class="grid-3" style="margin-bottom:4px;">
+    <div class="card">
+        <div class="card-title">🌙 隔夜情绪</div>
+        <div style="font-size:26px; font-weight:700; margin:2px 0;">
+            {% if intel.us_market_sentiment == "BULLISH" %}🌞{% elif intel.us_market_sentiment == "BEARISH" %}🌧{% else %}☁️{% endif %}
+            <span style="font-size:15px; color:var(--text-secondary); margin-left:6px;">{{ intel.us_market_sentiment or "—" }}</span>
+        </div>
+        {% if intel.oversea_summary %}
+        <div style="color:var(--text-muted); font-size:12px; margin-top:4px; font-family:monospace;">
+            {% for line in intel.oversea_summary.split('\n')[:3] %}{{ line }}<br>{% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    <div class="card" style="padding:16px;">
+        <div class="card-title">🔥 板块轮动 <span style="font-size:10px;color:var(--text-muted);font-weight:400;">点击板块看标的</span></div>
+        {% if intel.sector_rotation %}
+            {% for stage, color, bg in [("UPSTART","#f87171","rgba(248,113,113,0.06)"),("SUSTAIN","#fb923c","rgba(251,146,60,0.05)"),("DIVERGE","#fbbf24","rgba(251,191,36,0.05)"),("EXHAUST","#22c55e","rgba(34,197,94,0.05)")] %}
+                {% set names = [] %}
+                {% for k, v in intel.sector_rotation.items() %}{% if v == stage %}{% set _ = names.append(k) %}{% endif %}{% endfor %}
+                {% if names %}
+                {% set stage_label = {"UPSTART":"🔥 启动","SUSTAIN":"📈 持续","DIVERGE":"⚠️ 分化","EXHAUST":"❄️ 退潮"}[stage] %}
+                <div style="margin-bottom:4px;">
+                    <div class="heat-row" style="cursor:pointer;" onclick="var d=this.nextElementSibling;d.style.display=d.style.display==='none'?'block':'none';this.querySelector('.toggle-icon').textContent=this.querySelector('.toggle-icon').textContent==='+'?'−':'+'">
+                        <span class="heat-label" style="width:80px;">{{ stage_label }}</span>
+                        <div class="heat-bar" style="width:{{ names|length * 18 + 30 }}px;background:{{ color }};height:5px;"></div>
+                        <span style="color:var(--text-muted);font-size:12px;flex:1;">{{ names|join(' / ') }}</span>
+                        <span class="toggle-icon" style="color:var(--text-muted);font-size:14px;width:16px;text-align:center;">+</span>
+                    </div>
+                    <div style="display:none;margin-top:2px;padding:4px 8px 6px 80px;background:{{ bg }};border-radius:6px;font-size:11px;color:var(--text-secondary);line-height:1.8;">
+                        {% for name in names %}
+                        {% set codes = sector_stocks.get(name, []) %}
+                        <div>📌 {{ name }}: {% if codes %}{% for s in codes[:3] %}{{ s }} {% endfor %}{% else %}—{% endif %}</div>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endif %}
+            {% endfor %}
+        {% else %}<div style="color:var(--text-muted);font-size:13px;">—</div>{% endif %}
+    </div>
+    <div class="card">
+        <div class="card-title">📋 持仓速览</div>
+        {% set al2 = {"HOLD":"持有","ADD":"加仓","REDUCE":"减仓","TAKE_PROFIT":"止盈","STOP_LOSS":"止损","CLOSE":"清仓"} %}
+        {% set ac2 = {"HOLD":"blue","ADD":"green","REDUCE":"yellow","TAKE_PROFIT":"green","STOP_LOSS":"red","CLOSE":"red"} %}
+        {% if suggestions %}
+            {% set ns2 = namespace(total=0) %}
+            {% for s in suggestions %}{% set ns2.total = ns2.total + s.change_pct %}{% endfor %}
+            <div style="font-size:28px;font-weight:700;color:{% if ns2.total >= 0 %}var(--gain){% else %}var(--loss){% endif %};">
+                {{ "%+.1f"|format(ns2.total / (suggestions|length)) }}%
+            </div>
+            {% for s in suggestions %}
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0;font-size:12px;">
+                <span style="color:var(--text-secondary);">{{ s.code }}<br><span style="font-size:10px;color:var(--text-muted);">{{ s.name }}</span></span>
+                <span style="color:{% if s.change_pct>=0 %}var(--gain){% else %}var(--loss){% endif %};font-weight:600;">{{ "%+.1f"|format(s.change_pct) }}%</span>
+                <span class="tag tag-{{ ac2.get(s.action,'blue') }}" style="font-size:9px;padding:1px 6px;">{{ al2.get(s.action,s.action) }}</span>
+            </div>
+            {% endfor %}
+        {% else %}<div style="color:var(--text-muted);font-size:13px;">无持仓</div>{% endif %}
+    </div>
+</div>
+
+<!-- ═══ 产业链核心标的 ═══ -->
+{% if chain_reports %}
+<div class="card" style="padding:16px;">
+    <div class="card-title" style="margin-bottom:12px;">
+        🔗 产业链核心标的
+        <span class="badge">{{ chain_reports|length }} 只</span>
+    </div>
+    <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:6px;">
+        {% for cr in chain_reports[:5] %}
+        {% set sc = cr.score|default(0) %}
+        {% set bb = cr.bottleneck|default(0) %}
+        {% set cp = cr.current_price|default(0) %}
+        {% set ch = cr.change_pct|default(0) %}
+        {% set score_color = "#4ade80" if sc >= 65 else "#fbbf24" if sc >= 55 else "#64748b" %}
+        {% set score_bg = "rgba(74,222,128,0.06)" if sc >= 65 else "rgba(251,191,36,0.05)" %}
+        {% set score_bd = "rgba(74,222,128,0.15)" if sc >= 65 else "rgba(251,191,36,0.1)" %}
+        <div style="min-width:260px;flex:1;background:var(--bg-secondary);border-radius:14px;padding:14px;border:1px solid var(--border);">
+            <!-- 头 -->
+            <div style="display:flex;justify-content:space-between;align-items:start;">
+                <div>
+                    <div style="display:flex;align-items:center;gap:6px;">
+                        <span style="font-weight:700;font-size:16px;letter-spacing:0.5px;">{{ cr.code }}</span>
+                        <span style="color:var(--text-secondary);font-size:13px;">{{ cr.name }}</span>
+                    </div>
+                    <div style="display:flex;gap:4px;margin-top:5px;">
+                        <span style="font-size:10px;color:var(--accent-blue);background:rgba(56,189,248,0.08);padding:2px 8px;border-radius:4px;">{{ cr.chain_name }}</span>
+                        <span style="font-size:10px;color:var(--text-muted);background:rgba(255,255,255,0.04);padding:2px 8px;border-radius:4px;">{{ cr.sub_sector }}</span>
+                        <span style="font-size:10px;color:{% if cr.stage_label in ('爆发期','高景气') %}var(--gain){% else %}var(--text-muted){% endif %};background:rgba(255,255,255,0.04);padding:2px 8px;border-radius:4px;">{{ cr.stage_label }}</span>
+                    </div>
+                </div>
+                <div style="text-align:center;background:{{ score_bg }};border-radius:10px;padding:6px 12px;border:1px solid {{ score_bd }};">
+                    <div style="font-size:22px;font-weight:700;color:{{ score_color }};">{{ sc }}</div>
+                    <div style="font-size:9px;color:var(--text-muted);margin-top:-2px;">评分</div>
+                </div>
+            </div>
+            <!-- 价格+涨幅 -->
+            <div style="display:flex;justify-content:space-between;align-items:baseline;margin:12px 0 10px;">
+                <div>
+                    <span style="font-size:26px;font-weight:700;color:var(--text-primary);">{{ "%.2f"|format(cp) if cp else "—" }}</span>
+                    <span style="color:var(--text-muted);font-size:11px;margin-left:4px;">元</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px;">
+                    <span style="font-size:16px;font-weight:700;color:{% if ch >= 0 %}var(--gain){% else %}var(--loss){% endif %};">{{ "%+.1f"|format(ch) if ch else "0.0" }}%</span>
+                    <span class="tag {% if ch >= 0 %}tag-green{% else %}tag-red{% endif %}" style="font-size:9px;padding:1px 6px;">{{ "上涨" if ch >= 0 else "下跌" }}</span>
+                </div>
+            </div>
+            <!-- 三指标 -->
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:10px;">
+                <div style="background:rgba(255,255,255,0.03);border-radius:6px;padding:6px;text-align:center;">
+                    <div style="font-size:9px;color:var(--text-muted);">市盈率</div>
+                    <div style="font-size:13px;font-weight:600;color:{% if cr.pe and cr.pe > 0 and cr.pe < 30 %}var(--gain){% elif cr.pe and cr.pe > 60 %}var(--loss){% else %}var(--text-primary){% endif %};">{{ cr.pe|default("—", true) }}</div>
+                </div>
+                <div style="background:rgba(255,255,255,0.03);border-radius:6px;padding:6px;text-align:center;">
+                    <div style="font-size:9px;color:var(--text-muted);">市值</div>
+                    <div style="font-size:13px;font-weight:600;color:var(--text-primary);">{{ cr.mcap|default("—", true) }}<span style="font-size:10px;color:var(--text-muted);">亿</span></div>
+                </div>
+                <div style="background:rgba(255,255,255,0.03);border-radius:6px;padding:6px;text-align:center;">
+                    <div style="font-size:9px;color:var(--text-muted);">换手</div>
+                    <div style="font-size:13px;font-weight:600;color:var(--text-primary);">{{ cr.turnover|default("—", true) }}<span style="font-size:10px;color:var(--text-muted);">%</span></div>
+                </div>
+            </div>
+            <!-- 卡位 -->
+            <div style="display:flex;align-items:center;gap:6px;padding:5px 8px;background:rgba(255,255,255,0.02);border-radius:6px;margin-bottom:8px;">
+                <span style="font-size:10px;color:var(--text-muted);">卡位</span>
+                <div style="display:flex;gap:2px;">{% for i in range(5) %}<span style="font-size:12px;">{% if i < bb %}🟥{% else %}⬜{% endif %}</span>{% endfor %}</div>
+                <span style="font-size:10px;color:var(--text-secondary);margin-left:4px;">{{ cr.bottleneck_desc or '' }}</span>
+            </div>
+            <!-- 标签 -->
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <div style="display:flex;gap:4px;flex-wrap:wrap;">
+                    {% for r in cr.reasons %}<span class="tag tag-blue" style="font-size:8px;padding:1px 6px;">{{ r }}</span>{% endfor %}
+                </div>
+                <span onclick="openModal('{{ cr.code }}','{{ cr.name }}',{{ cp }})" style="cursor:pointer;color:var(--accent-blue);font-size:20px;font-weight:700;width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:6px;background:rgba(56,189,248,0.08);">+</span>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+<!-- ═══ 今日选股 ═══ -->
+{% if portfolio and (portfolio.short_term or portfolio.medium_term or portfolio.long_term) %}
+<div class="card" style="border-color:rgba(251,146,60,0.12);padding:20px;">
+    <div class="card-title" style="margin-bottom:16px;font-size:14px;color:var(--text-primary);text-transform:none;">
+        🎯 <strong>今日选股</strong>
+        <span class="badge">{{ portfolio.short_term|length + portfolio.medium_term|length + portfolio.long_term|length }} 只</span>
+    </div>
+
+    <!-- ⚡ 短线博弈 — 增强展示 -->
+    {% if trader_setups %}
+    <div style="margin-bottom:16px;background:rgba(168,85,247,0.03);border-radius:var(--radius-md);padding:14px;border:1px solid rgba(168,85,247,0.08);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+            <span style="font-size:13px;font-weight:700;color:var(--accent-purple);">⚡ 短线猎手 v4</span>
+                <span style="font-size:9px;color:var(--text-muted);margin-left:4px;">百分位·共振·自适应</span>
+            <span class="badge" style="background:rgba(168,85,247,0.1);color:#a855f7;">{{ trader_setups|length }} 只</span>
+        </div>
+        <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:4px;">
+            {% for ts in trader_setups[:4] %}
+            {% set is_buy = '买入' in ts.entry_advice %}
+            {% set mode_cls = "tag-orange" if ts.mode == "追涨型" else "tag-blue" %}
+            <div style="min-width:230px;flex:1;background:var(--bg-primary);border-radius:var(--radius-sm);padding:12px;border:1px solid rgba(168,85,247,0.1);">
+                <!-- 头部 -->
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <div>
+                        <span style="font-weight:700;font-size:15px;">{{ ts.code }}</span>
+                        <span style="color:var(--text-secondary);font-size:12px;margin-left:4px;">{{ ts.name }}</span>
+                    <span onclick="openModal('{{ ts.code }}','{{ ts.name }}',{{ ts.current_price }})" style="cursor:pointer;color:var(--accent-blue);font-size:16px;font-weight:700;margin-left:8px;">+</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:4px;">
+                        <span class="tag {{ mode_cls }}" style="font-size:9px;padding:1px 6px;">{{ ts.mode }}</span>
+                        <span style="font-weight:700;font-size:18px;color:var(--accent-purple);">{{ ts.score }}</span>
+                    </div>
+                </div>
+                <!-- 操作建议条 -->
+                <div style="display:flex;align-items:center;gap:8px;margin:6px 0;background:rgba(168,85,247,0.05);border-radius:6px;padding:6px 8px;">
+                    <span style="font-size:11px;font-weight:700;color:{% if is_buy %}#22c55e{% else %}#94a3b8{% endif %};">
+                        {% if ts.veto_reason %}<div style="position:absolute;top:0;left:0;right:0;background:rgba(239,68,68,0.1);border-radius:6px 6px 0 0;padding:2px 6px;font-size:8px;color:var(--accent-red);text-align:center;">🚫 {{ ts.veto_reason }}</div><div style="padding-top:14px;"></div>{% endif %}{% if is_buy %}🟢{% else %}⚪{% endif %} {{ ts.entry_advice }}
+                    </span>
+                    <span style="font-size:11px;color:var(--text-muted);">仓位 <strong style="color:var(--text-primary);">{{ ts.position_pct }}</strong></span>
+                    <span style="font-size:11px;color:var(--text-muted);">止损 <strong style="color:var(--loss);">{{ ts.stop_loss }}</strong></span>
+                </div>
+                <!-- 关键指标 -->
+                <div style="display:flex;gap:10px;font-size:11px;color:var(--text-muted);">
+                    <span>涨幅 <strong style="color:{% if ts.change_pct >= 0 %}var(--gain){% else %}var(--loss){% endif %};">{{ ts.change_pct }}%</strong></span>
+                    <span>量比 <strong>{{ ts.vol_ratio }}</strong></span>
+                    <span>换手 <strong>{{ ts.turnover }}%</strong></span>
+                    <span>现价 <strong>{{ ts.current_price }}</strong></span>
+                </div>
+                <!-- 风险/理由 -->
+                <!-- 百分位条 v4 -->
+                    <div style="display:flex;gap:4px;margin:6px 0;">
+                        {% set cols = [(ts.theme_pct|default(50), "题材", "#a855f7"), (ts.fund_pct|default(50), "资金", "#3b82f6"), (ts.tech_pct|default(50), "技术", "#22c55e")] %}
+                        {% for val, label, color in cols %}
+                        <div style="flex:1;text-align:center;">
+                            <div style="font-size:7px;color:var(--text-muted);margin-bottom:1px;">{{ label }}</div>
+                            <div style="height:8px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden;">
+                                <div style="height:100%;width:{{ val|int }}%;background:{{ color }};border-radius:4px;"></div>
+                            </div>
+                            <div style="font-size:7px;font-weight:600;color:{{ color }};">P{{ val|int }}</div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    <div style="display:flex;gap:4px;margin-top:5px;flex-wrap:wrap;">
+                    {% for r in ts.reasons %}<span class="tag tag-purple" style="font-size:8px;padding:1px 5px;">{{ r }}</span>{% endfor %}
+                    {% for r in ts.risks %}<span style="font-size:8px;color:var(--accent-red);background:rgba(239,68,68,0.08);border-radius:4px;padding:1px 5px;">⚠️ {{ r }}</span>{% endfor %}
+                </div>
+                <!-- 展开详细 -->
+                <div style="margin-top:6px;">
+                    <span style="font-size:10px;color:var(--accent-blue);cursor:pointer;" onclick="var d=this.nextElementSibling;if(d&&d.style){d.style.display=d.style.display==='none'?'block':'none';this.textContent=this.textContent==='展开'?'收起':'展开'}">展开</span>
+                    <div style="display:none;margin-top:4px;padding:8px;background:rgba(0,0,0,0.15);border-radius:6px;font-size:11px;color:var(--text-secondary);line-height:1.6;">
+                        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+                            {% for k, v in ts.dimensions.items() %}
+                            <span>{{ k }} <strong style="color:var(--accent-blue);">{{ v }}</strong></span>
+                            {% endfor %}
+                        </div>
+                        {% if ts.resonance and ts.resonance != 0 %}
+                        <div style="margin-top:4px;font-size:10px;color:var(--text-muted);">
+                            共振修正: <strong style="color:{% if ts.resonance > 0 %}var(--gain){% else %}var(--loss){% endif %};">{{ ts.resonance }}{% if ts.resonance > 0 %}+{% endif %}</strong>
+                            {% if ts.weights %} | 权重: <strong>{{ ts.weights }}</strong>{% endif %}
+                        </div>{% endif %}
+                        {% if ts.follow_up %}
+                        <div style="margin-top:6px;padding:6px 8px;background:rgba(168,85,247,0.06);border-radius:4px;">
+                            📋 <strong>策略：</strong>{{ ts.follow_up }}
+                        </div>{% endif %}
+                        {% if ts.key_levels %}
+                        <div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap;font-size:10px;">
+                            {% set kl = ts.key_levels %}
+                            <span style="color:var(--loss);">损{{ kl.hard_stop }}</span>
+                            <span style="color:var(--accent-yellow);">预{{ kl.warning_stop }}</span>
+                            <span style="color:var(--text-muted);">保{{ kl.break_even }}</span>
+                            <span style="color:var(--accent-blue);">T1{{ kl.target1 }}</span>
+                            <span style="color:var(--accent-green);">T2{{ kl.target2 }}</span>
+                            <span style="color:var(--text-muted);">波{{ kl.atr_pct }}%</span>
+                        </div>{% endif %}
+                        {% if ts.exit_plan %}
+                        <div style="margin-top:6px;">
+                            <span style="font-size:10px;color:var(--accent-blue);cursor:pointer;" onclick="var d=this.nextElementSibling;if(d&&d.style){d.style.display=d.style.display==='none'?'block':'none';this.textContent=this.textContent==='展开'?'收起':'展开'}">📋 完整计划</span>
+                            <div style="display:none;margin-top:4px;padding:6px;background:rgba(0,0,0,0.15);border-radius:4px;font-size:10px;color:var(--text-secondary);line-height:1.6;white-space:pre-wrap;font-family:monospace;">{{ ts.exit_plan }}</div>
+                        </div>{% endif %}
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- 三框架选股 — 卡片式布局 -->
+    <div class="grid-3" style="align-items:stretch;gap:12px;">
+        <!-- 短期爆发 -->
+        <div style="background:linear-gradient(180deg,rgba(251,146,60,0.05) 0%,transparent 100%);border-radius:var(--radius-md);padding:16px;border:1px solid rgba(251,146,60,0.1);">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <span style="font-size:14px;font-weight:700;color:var(--accent-orange);">🔥 短期爆发</span>
+                <span style="font-size:10px;color:var(--text-muted);background:rgba(255,255,255,0.04);padding:2px 8px;border-radius:999px;">3-10天</span>
+            </div>
+            {% if portfolio.short_term %}
+                {% for sp in portfolio.short_term %}
+                <div style="margin-bottom:{% if loop.last %}0{% else %}10px{% endif %};">
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <span style="font-weight:600;font-size:15px;">{{ sp.code }}</span>
+                        <span style="font-weight:700;font-size:20px;color:var(--accent-orange);">{{ sp.score }}</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;">
+                        <div style="color:var(--text-secondary);font-size:12px;margin:1px 0;">{{ sp.name }}</div>
+                        <span onclick="openModal('{{ sp.code }}','{{ sp.name }}',{{ sp.current_price|default(0) }})" style="cursor:pointer;color:var(--accent-blue);font-size:16px;font-weight:700;">+</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;align-items:baseline;margin:6px 0;">
+                        <span style="font-size:18px;font-weight:700;color:var(--text-primary);">{{ "%.2f"|format(sp.current_price) if sp.current_price else "—" }}</span>
+                        <span style="font-size:13px;font-weight:600;color:{% if sp.change_pct and sp.change_pct >= 0 %}var(--gain){% else %}var(--loss){% endif %};">
+                            {{ "%+.1f"|format(sp.change_pct|default(0)) }}%
+                        </span>
+                    </div>
+                    <div class="score-bar" style="height:3px;"><div class="score-bar-fill" style="width:{{ sp.score }}%;background:linear-gradient(90deg,#fb923c,#f97316);"></div></div>
+                    {% if sp.entry_zone %}
+                    <div style="display:flex;gap:6px;margin-top:5px;font-size:11px;color:var(--text-muted);background:rgba(251,146,60,0.04);border-radius:4px;padding:4px 6px;">
+                        <span>入场 {{ "%.2f"|format(sp.entry_zone[0]) }}-{{ "%.2f"|format(sp.entry_zone[1]) }}</span>
+                        <span>止损 {{ sp.stop_loss }}</span>
+                        <span>目标 {{ sp.target_price }}</span>
+                    </div>
+                    {% endif %}
+                    {% if sp.reason %}<div style="margin-top:4px;">{% for tag in sp.reason.split(' ') %}{% if tag %}<span class="tag tag-orange" style="font-size:8px;padding:1px 5px;">{{ tag }}</span> {% endif %}{% endfor %}</div>{% endif %}
+                    {% if analyst_reports and sp.code in analyst_reports %}
+                    <div style="margin-top:6px;">
+                        <span style="font-size:10px;color:var(--accent-blue);cursor:pointer;" onclick="var d=this.nextElementSibling;if(d&&d.style){d.style.display=d.style.display==='none'?'block':'none';this.textContent=this.textContent==='展开'?'收起':'展开'}">展开</span>
+                        <div style="display:none;margin-top:4px;">
+                            {% set al = {"PriceMoneyAnalyst":{"n":"📊 技术面","c":"#fb923c"},"ValueMoatAnalyst":{"n":"💰 基本面","c":"#38bdf8"},"RiskAnalyst":{"n":"🛡️ 风控","c":"#a855f7"}} %}
+                            {% for atype, ar in analyst_reports[sp.code].items() %}
+                            {% set a = al.get(atype, {"n":atype,"c":"#64748b"}) %}
+                            <div style="background:rgba(255,255,255,0.02);border-left:2px solid {{ a.c }};border-radius:3px;padding:4px 8px;margin-bottom:3px;">
+                                <div style="font-size:10px;font-weight:600;color:{{ a.c }};">{{ a.n }}</div>
+                                <div style="font-size:11px;color:var(--text-secondary);line-height:1.5;">{{ ar.reasoning[:120] }}{% if ar.reasoning|length > 120 %}…{% endif %}</div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+                {% if not loop.last %}<hr style="border:none;border-top:1px solid rgba(255,255,255,0.04);margin:10px 0;">{% endif %}
+                {% endfor %}
+            {% else %}<div style="color:var(--text-muted);text-align:center;padding:20px;">暂无</div>{% endif %}
+        </div>
+
+        <!-- 中期趋势 -->
+        <div style="background:linear-gradient(180deg,rgba(56,189,248,0.04) 0%,transparent 100%);border-radius:var(--radius-md);padding:16px;border:1px solid rgba(56,189,248,0.08);">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <span style="font-size:14px;font-weight:700;color:var(--accent-blue);">📈 中期趋势</span>
+                <span style="font-size:10px;color:var(--text-muted);background:rgba(255,255,255,0.04);padding:2px 8px;border-radius:999px;">10-30天</span>
+            </div>
+            {% if portfolio.medium_term %}
+                {% for sp in portfolio.medium_term %}
+                <div style="margin-bottom:{% if loop.last %}0{% else %}10px{% endif %};">
+                    <div style="display:flex;justify-content:space-between;">
+                        <span style="font-weight:600;font-size:14px;">{{ sp.code }}</span>
+                        <span style="font-weight:600;color:var(--accent-blue);">{{ sp.score }}</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <div style="color:var(--text-secondary);font-size:12px;">{{ sp.name }}</div>
+                        <span onclick="openModal('{{ sp.code }}','{{ sp.name }}',{{ sp.current_price|default(0) }})" style="cursor:pointer;color:var(--accent-blue);font-size:16px;font-weight:700;">+</span>
+                    </div>
+                    <div class="score-bar" style="height:3px;"><div class="score-bar-fill" style="width:{{ sp.score }}%;background:linear-gradient(90deg,#38bdf8,#2563eb);"></div></div>
+                </div>
+                {% if not loop.last %}<hr style="border:none;border-top:1px solid rgba(255,255,255,0.03);margin:8px 0;">{% endif %}
+                {% endfor %}
+            {% else %}<div style="color:var(--text-muted);text-align:center;padding:20px;">暂无</div>{% endif %}
+        </div>
+
+        <!-- 长期持有 -->
+        <div style="background:linear-gradient(180deg,rgba(74,222,128,0.04) 0%,transparent 100%);border-radius:var(--radius-md);padding:16px;border:1px solid rgba(74,222,128,0.08);">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <span style="font-size:14px;font-weight:700;color:var(--accent-green);">🌳 长期持有</span>
+                <span style="font-size:10px;color:var(--text-muted);background:rgba(255,255,255,0.04);padding:2px 8px;border-radius:999px;">3个月+</span>
+            </div>
+            {% if portfolio.long_term %}
+                {% for sp in portfolio.long_term %}
+                <div style="margin-bottom:{% if loop.last %}0{% else %}10px{% endif %};">
+                    <div style="display:flex;justify-content:space-between;">
+                        <span style="font-weight:600;font-size:14px;">⭐ {{ sp.code }}</span>
+                        <span style="font-weight:600;color:var(--accent-green);">{{ sp.score }}</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <div style="color:var(--text-secondary);font-size:12px;">{{ sp.name }}</div>
+                        <span onclick="openModal('{{ sp.code }}','{{ sp.name }}',{{ sp.current_price|default(0) }})" style="cursor:pointer;color:var(--accent-blue);font-size:16px;font-weight:700;">+</span>
+                    </div>
+                    <div class="score-bar" style="height:3px;"><div class="score-bar-fill" style="width:{{ sp.score }}%;background:linear-gradient(90deg,#4ade80,#16a34a);"></div></div>
+                </div>
+                {% endfor %}
+            {% else %}<div style="color:var(--text-muted);text-align:center;padding:20px;">暂无</div>{% endif %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{% if intel.hot_topics %}
+<div class="card">
+    <div class="card-title">📈 今日热点</div>
+    <div class="grid-2">
+        {% for t in intel.hot_topics[:6] %}
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:rgba(255,255,255,0.02);border-radius:var(--radius-sm);font-size:13px;">
+            <span style="color:var(--text-muted);font-size:11px;">{{ loop.index }}</span>
+            <span style="flex:1;">{{ t.title[:50] }}{% if t.title|length > 50 %}…{% endif %}</span>
+            {% if t.impact == "POSITIVE" %}<span class="tag tag-green" style="font-size:10px;">利好</span>{% elif t.impact == "NEGATIVE" %}<span class="tag tag-red" style="font-size:10px;">利空</span>{% endif %}
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+{% endblock %}
