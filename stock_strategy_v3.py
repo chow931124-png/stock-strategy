@@ -1263,7 +1263,7 @@ class WeChatNotifier:
         if now.weekday() >= 5: return False
         return True
 
-    def notify(self, results: list, market_info: dict, sector_info: dict, mode: str = "", all_results: list = None, force_push: bool = False):
+    def notify(self, results: list, market_info: dict, sector_info: dict, mode: str = "", all_results: list = None, hot_breakout: list = None, force_push: bool = False):
         if not results:
             print("  [通知] 无信号，跳过")
             return
@@ -1349,6 +1349,12 @@ class WeChatNotifier:
             if top_sec:
                 parts = [f"{s}({c}只)" for s, c in top_sec]
                 lines.append(f"📌 信号集中: {' '.join(parts)}")
+
+            # 热门板块突破观察
+            if hot_breakout:
+                hb_sorted = sorted(hot_breakout, key=lambda x: -x.get('short_score', 0))[:3]
+                parts = [f"{r['name']}({r.get('short_score',0)}分)" for r in hb_sorted]
+                lines.append(f"🔥 突破: {' '.join(parts)}")
 
         # ── 尾部 ──
         if mode == "morning":
@@ -1675,6 +1681,135 @@ def apply_self_learning_feedback(sector_scores: dict) -> dict:
 
 
 # ════════════════════════════════════════════════════════
+# 模块10：板块轮动检测
+# ════════════════════════════════════════════════════════
+def detect_sector_rotation(sector_scores: dict) -> dict:
+    """
+    对比今日与昨日的板块评分，检测资金轮动方向。
+
+    返回:
+        {"gaining": [(板块, 变化量, 当前分), ...],
+         "cooling": [(板块, 变化量, 当前分), ...],
+         "available": bool}
+    """
+    try:
+        rotation_path = CACHE_DIR / "sector_rotation.json"
+        today_str = datetime.now().strftime("%Y-%m-%d")
+
+        history = {}
+        if rotation_path.exists():
+            history = json.loads(rotation_path.read_text())
+
+        # 找最近的一个交易日数据
+        yesterday_scores = {}
+        for d in range(1, 10):
+            check = (datetime.now() - timedelta(days=d)).strftime("%Y-%m-%d")
+            if check in history and check != today_str:
+                yesterday_scores = history[check]
+                break
+
+        # 保存今天的记录
+        history[today_str] = {k: v for k, v in sector_scores.items()}
+        while len(history) > 30:
+            history.pop(next(iter(history)))
+        rotation_path.write_text(json.dumps(history, ensure_ascii=False, indent=2))
+
+        if not yesterday_scores:
+            return {"gaining": [], "cooling": [], "available": False}
+
+        changes = []
+        for sector, score in sector_scores.items():
+            if sector in yesterday_scores and yesterday_scores[sector] > 0:
+                delta = score - yesterday_scores[sector]
+                changes.append((sector, delta, score, yesterday_scores[sector]))
+
+        changes.sort(key=lambda x: -abs(x[1]))
+        gaining = [(s, d, sc) for s, d, sc, _ in changes if d >= 8][:5]
+        cooling = [(s, d, sc) for s, d, sc, _ in changes if d <= -8][:5]
+
+        return {"gaining": gaining, "cooling": cooling, "available": bool(gaining or cooling)}
+    except Exception as e:
+        if os.environ.get("DEBUG_ROTATION"):
+            print(f"  [轮动] 检测异常: {e}")
+        return {"gaining": [], "cooling": [], "available": False}
+
+
+# ════════════════════════════════════════════════════════
+# 模块11：盘中预警监控
+# ════════════════════════════════════════════════════════
+def _run_monitor(args):
+    """
+    盘中预警监控：持续扫描，检测信号/板块/温度变化时提醒。
+
+    通过子进程执行安静扫描，解析输出中关键变化行。
+    无需改动main()中的扫描逻辑，独立运行互不干扰。
+    """
+    import hashlib
+    interval = max(60, args.interval)
+    prev_sig_hash = ""
+
+    print(f"\n🔍 盘中预警监控启动 (轮询间隔 {interval}s)")
+    print(f"   按 Ctrl+C 停止\n")
+
+    while True:
+        try:
+            now = datetime.now()
+            if now.weekday() >= 5:
+                print(f"  💤 周末暂停 ({now.strftime('%Y-%m-%d %H:%M')})")
+                time.sleep(1800)
+                continue
+            if now.hour < 9 or now.hour >= 15:
+                wait = 600 if now.hour >= 15 else ((9 - now.hour) * 3600 - now.minute * 60 - now.second + 60)
+                time.sleep(min(wait, 1800))
+                continue
+
+            cmd = [sys.executable, __file__, '--quiet', '--mode', args.mode]
+            if args.sector:
+                cmd += ['--sector', args.sector]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            output = r.stdout
+
+            sig_lines = []
+            for line in output.split('\n'):
+                if any(kw in line for kw in ['信号', '🌡️', '短线', '突破', '综合', '🏆', '轮动',
+                                              '板块', '精选', '增强']):
+                    if line.strip():
+                        sig_lines.append(line.strip()[-120:])
+            sig_text = '\n'.join(sorted(set(sig_lines)))
+            cur_hash = hashlib.md5(sig_text.encode()).hexdigest()
+
+            if prev_sig_hash:
+                if cur_hash != prev_sig_hash:
+                    print(f"\n[{now.strftime('%H:%M')}] 🔔 扫描结果变化!")
+                    for line in output.split('\n'):
+                        if any(kw in line for kw in ['🆕', '⚡', '🔥 热门', '轮动', '资金流入',
+                                                      '资金流出', '新信号', '🌡️', '🧊']):
+                            if line.strip():
+                                print(f"  {line.strip()}")
+                    for line in output.split('\n'):
+                        if '🌡️' in line and '温度' in line:
+                            print(f"  {line.strip()}")
+                            break
+            else:
+                print(f"  [{now.strftime('%H:%M')}] ✅ 首次扫描完成:")
+                for line in output.split('\n'):
+                    if '🌡️' in line or '📈 策略信号' in line or '🏆 热门板块' in line:
+                        print(f"    {line.strip()}")
+
+            prev_sig_hash = cur_hash
+
+        except KeyboardInterrupt:
+            print(f"\n  ⏹️ 监控停止 ({datetime.now().strftime('%H:%M')})")
+            break
+        except subprocess.TimeoutExpired:
+            print(f"  [{now.strftime('%H:%M')}] ⏰ 扫描超时(300s), 跳过本轮")
+        except Exception as e:
+            print(f"  [{now.strftime('%H:%M')}] ⚠️ 扫描异常: {e}")
+
+        time.sleep(interval)
+
+
+# ════════════════════════════════════════════════════════
 # ════════════════════════════════════════════════════════
 # 主流程
 # ════════════════════════════════════════════════════════
@@ -1688,7 +1823,16 @@ def main():
     parser.add_argument("--force-push", action="store_true", help="强制推送(跳过周末/时间检查)")
     parser.add_argument("--mode", type=str, default="",
                         help="推送模式: morning(早报)/lunch(午盘)/close(收盘)/night(复盘)")
+    parser.add_argument("--monitor", action="store_true",
+                        help="盘中预警监控: 持续扫描发现新信号/板块突变时提醒")
+    parser.add_argument("--interval", type=int, default=300,
+                        help="监控轮询间隔(秒), 默认300秒(5分钟)")
     args = parser.parse_args()
+    args.force_push = getattr(args, 'force_push', False)
+
+    # ── 盘中预警监控模式 ──
+    if args.monitor:
+        return _run_monitor(args)
 
     # 根据模式调整推送窗口
     mode_label = {"lunch": "午盘", "close": "收盘", "night": "复盘"}.get(args.mode, "")
@@ -1781,6 +1925,17 @@ def main():
     # ── 自学习反馈：对历史胜率低的板块降权 ──
     sector_scores = apply_self_learning_feedback(sector_scores)
 
+    # ── 板块轮动检测（对比昨日板块评分变化）──
+    rotation = detect_sector_rotation(sector_scores)
+    if not args.quiet and rotation.get("available"):
+        gaining = rotation.get("gaining", [])
+        cooling = rotation.get("cooling", [])
+        print(f"\n🔄 板块轮动检测:")
+        if gaining:
+            print(f"  🔥 资金流入: {' | '.join(f'{s}({d:+.0f}→{sc})' for s,d,sc in gaining)}")
+        if cooling:
+            print(f"  🧊 资金流出: {' | '.join(f'{s}({d:.0f}→{sc})' for s,d,sc in cooling)}")
+
     # ── 步骤3：个股扫描 ──
     # 确定扫描范围
     if args.codes:
@@ -1853,12 +2008,15 @@ def main():
         score_result = stock_scorer.score(row, sec_score)
 
         # 记录所有扫描过的股票（用于突破观察）
-        short_score = 0
-        short_reasons = ""
-        short_info = stock_scorer.calc_short_term(row, sec_score)
-        if short_info:
-            short_score = short_info.get("short_score", 0)
-            short_reasons = short_info.get("short_reasons", "")
+        # 有信号时直接从score_result取short_term，避免重复计算calc_short_term
+        if score_result:
+            short_term = score_result.get("short_term", {})
+            short_score = short_term.get("short_score", 0)
+            short_reasons = short_term.get("short_reasons", "")
+        else:
+            short_info = stock_scorer.calc_short_term(row, sec_score)
+            short_score = short_info.get("short_score", 0) if short_info else 0
+            short_reasons = short_info.get("short_reasons", "") if short_info else ""
         all_scanned.append({
             "code": code, "name": quote.get("name", name) or code,
             "sector": sector, "sector_score": sec_score,
@@ -2221,7 +2379,10 @@ def main():
             "position_limit": pos_limit,
         }
         sector_info = {"top": top_sectors}
-        notifier.notify(results, market_info, sector_info, mode=args.mode, all_results=all_results, force_push=getattr(args, 'force_push', False))
+        hot_breakout_list = locals().get('hot_breakout', []) or []
+        notifier.notify(results, market_info, sector_info, mode=args.mode,
+                        all_results=all_results, hot_breakout=hot_breakout_list,
+                        force_push=getattr(args, 'force_push', False))
 
 
 if __name__ == "__main__":
