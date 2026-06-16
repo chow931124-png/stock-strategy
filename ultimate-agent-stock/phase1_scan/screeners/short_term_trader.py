@@ -431,18 +431,26 @@ class ShortTermTrader(BaseScreener):
         if not scored:
             return []
 
-        # 温度低时收紧标准
+        # 温度低时适当收紧，但不至于全灭
         temp_adj = 0
-        if temp < 40:
-            temp_adj = 8  # 低温时提高门槛，减少出击
+        if temp < 30:
+            temp_adj = 8  # 冰点：只出最确定的
+        elif temp < 40:
+            temp_adj = 3  # 偏冷：略收紧
         elif temp > 70:
-            temp_adj = -5  # 高温时降低门槛，更多机会
+            temp_adj = -5  # 火热：放宽
 
-        min_score = 55 + temp_adj
+        min_score = 48 + temp_adj
         eligible = [s for s in scored if s["final_score"] >= min_score]
 
-        # 弹性上限：最多8只，最少0只
-        max_picks = min(8, max(0, len(eligible) // 2 + 1))
+        if not eligible:
+            # 分数普遍低但有候选，至少给1只最好的
+            scored.sort(key=lambda x: -x["final_score"])
+            if scored[0]["final_score"] >= 42:
+                eligible = scored[:1]
+
+        # 弹性上限：最多8只，保证至少出1只
+        max_picks = max(1, min(8, len(eligible) // 2 + 1))
 
         selected = eligible[:max_picks]
         # 兼容旧字段（main.py 推送 + web展示用）
