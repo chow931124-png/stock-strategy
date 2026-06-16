@@ -394,6 +394,26 @@ async def cmd_scan(args):
     except Exception:
         print("     （分析师调用跳过）")
 
+    # 短线猎手风控验证（不依赖LLM，只用量化风险评分）
+    if hasattr(trader, 'last_setups') and trader.last_setups:
+        try:
+            from phase2_analysis.analysts.risk import RiskAnalyst
+            risk = RiskAnalyst()
+            for s in trader.last_setups:
+                code = s["code"]
+                report = await risk.analyze(code, regime)
+                if report and hasattr(report, 'reasoning'):
+                    s["risk_report"] = report.reasoning[:80]
+                    s["risk_score"] = 100 - report.score if hasattr(report, 'score') else 0
+                    if hasattr(report, 'score') and report.score < 30:
+                        s["risk_warn"] = True
+                        print(f"     ⚠️ 短线风控 {s['name']}({code}): {report.reasoning[:60]}")
+                else:
+                    s["risk_report"] = ""
+                    s["risk_score"] = 0
+        except Exception:
+            pass
+
     # 记录到信号回溯系统 + 更新历史推荐表现
     _report("保存结果", 90)
     try:
