@@ -191,18 +191,39 @@ class ThreeFrameScorer:
         elif turnover > 20:
             volume -= 12
 
-        # ★ 价量背离惩罚：放量下跌=出货，非吃货
-        if len(closes) >= 3:
-            chg_1d = (closes[-1] - closes[-2]) / closes[-2] * 100
-            if chg_1d < -4 and vr > 1.3:
-                volume -= 25  # 放量大跌，主力出货
-            elif chg_1d < -3 and vr > 1.5:
-                volume -= 15  # 明显放量下跌
-            # 放量上涨且涨幅温和才是健康的
-            elif 1 <= chg_1d <= 5 and vr > 1.3:
-                volume += 5   # 放量小涨，资金温和进场
-
         volume = min(100, max(0, volume))
+
+        # ═══════════════════════════════════════════
+        # 因子X：价量背离检测（独立因子）— 放量下跌扣分，放量上涨加分
+        # ═══════════════════════════════════════════
+        divergence = 0
+        if len(closes) >= 5 and len(volumes) >= 5:
+            # 最近5天价量方向匹配度：每天看价格涨跌和成交量增减方向是否一致
+            div_count = 0  # 背离天数
+            con_count = 0  # 一致天数
+            for i in range(-4, 0):
+                price_up = closes[i] > closes[i-1]
+                vol_up = volumes[i] > volumes[i-1]
+                if price_up and vol_up:
+                    con_count += 1  # 放量上涨 → 健康
+                elif not price_up and vol_up:
+                    div_count += 1  # 放量下跌 → 出货
+                # 缩量涨/缩量跌 → 中性，不计数
+
+            total = div_count + con_count
+            if total >= 3:
+                # 用 (一致天数 - 背离天数) / 总天数 映射到 -10 ~ +10
+                divergence = int((con_count - div_count) / total * 10)
+            # 大额惩罚：单日跌超5% + 量比 > 2，直接触发强信号
+            chg_1d = (closes[-1] - closes[-2]) / closes[-2] * 100 if len(closes) >= 2 else 0
+            vr = np.mean(volumes[-5:]) / np.mean(volumes[-20:]) if np.mean(volumes[-20:]) > 0 else 1
+            if chg_1d < -5 and vr > 1.5:
+                divergence = min(divergence, -8)  # 极端放量下跌，强负信号
+            elif chg_1d > 3 and vr > 1.3:
+                divergence = max(divergence, 5)   # 放量上涨，正信号
+
+        # ─── 价量背离独立因子（-10~+10，供短/中期使用） ───
+        divergence_adj = divergence  # -10~+10
 
         # ═══════════════════════════════════════════
         # 因子3：情绪催化（情报+题材+资金流）
@@ -271,10 +292,10 @@ class ThreeFrameScorer:
             pass
 
         # ─── 三框架原始分 ───
-        # 短期 = 趋势0.35 + 量价0.30 + 情绪0.25 + 市惩0.10
-        raw_short = trend * 0.35 + volume * 0.30 + sentiment * 0.25 - mcap_pe
-        # 中期 = 趋势0.25 + 量价0.20 + 情绪0.20 + 基本面0.20 + 市值0.15
-        raw_med = trend * 0.25 + volume * 0.20 + sentiment * 0.20 + fund_score * 0.20
+        # 短期 = 趋势0.35 + 量价0.30 + 情绪0.25 + 背离0.10 - 市惩0.10
+        raw_short = trend * 0.35 + volume * 0.30 + sentiment * 0.25 + divergence_adj - mcap_pe
+        # 中期 = 趋势0.25 + 量价0.20 + 情绪0.20 + 基本面0.20 + 背离0.15
+        raw_med = trend * 0.25 + volume * 0.20 + sentiment * 0.20 + fund_score * 0.20 + divergence_adj
         # 长期 = 基本面0.40 + 趋势0.15 + 量价0.10 + 情绪0.10 + 市值0.25
         raw_long = fund_score * 0.40 + trend * 0.15 + volume * 0.10 + sentiment * 0.10
 
@@ -285,6 +306,7 @@ class ThreeFrameScorer:
             "pe_ttm": pe, "mcap": mcap, "last_close": quote.get("last_close"),
             "raw_short": raw_short, "raw_med": raw_med, "raw_long": raw_long,
             "short_score": 0, "med_score": 0, "long_score": 0,
+            "divergence": divergence_adj,
             "trend": round(trend, 1),
             "volume": round(volume, 1),
             "sentiment": round(sentiment, 1),
