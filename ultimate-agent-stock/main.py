@@ -370,10 +370,10 @@ async def cmd_scan(args):
                 if code in results:
                     analyst_results[code] = results[code]
 
-            # 中期/长期只调风险分析师
+            # 中期只调风险分析师
             from phase2_analysis.analysts.risk import RiskAnalyst
             risk = RiskAnalyst()
-            for sp in portfolio.medium_term + portfolio.long_term:
+            for sp in portfolio.medium_term:
                 if sp.code not in analyst_results:
                     report = await risk.analyze(sp.code, regime)
                     analyst_results[sp.code] = {"RiskAnalyst": report}
