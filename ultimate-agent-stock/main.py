@@ -187,7 +187,7 @@ async def cmd_scan(args):
     _report("全市场初筛", 10)
     print("  🔎 实时全市场扫描（排除 688/300/ST/低价/低成交）...")
     from data.market_scanner import scan_full_market
-    candidates = scan_full_market(min_price=5, min_amount_wan=5000, max_stocks=300)
+    candidates = scan_full_market(min_price=5, min_amount_wan=5000, max_stocks=500)
     if not candidates:
         from phase1_scan.pre_filter import pre_filter
         candidates = pre_filter()
