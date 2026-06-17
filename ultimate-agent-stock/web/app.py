@@ -266,31 +266,57 @@ async def delete_position(request: Request):
 
 
 @app.post("/api/push-dingtalk")
-async def push_dingtalk():
-    """推送今日选股到钉钉"""
-    from main import cmd_scan, cmd_briefing
+async def push_dingtalk(request: Request):
+    """后台扫描完成后推送钉钉"""
+    from main import cmd_scan
     import argparse
-    from phase5_push.dingtalk_push import dingtalk_push, dingtalk_markdown
+    from phase5_push.dingtalk_push import dingtalk_push
 
-    briefing_args = argparse.Namespace(push=False, time=None, mode="full", code="")
-    briefing = await cmd_briefing(briefing_args)
+    if SCAN_RUNNING["status"]:
+        return JSONResponse({"error": "扫描已在运行中"}, status_code=429)
 
-    scan_args = argparse.Namespace(push=False, time=None, mode="full", code="")
-    portfolio = await cmd_scan(scan_args)
+    _write_progress("推送前扫描", 5, "启动全量扫描...")
+    SCAN_RUNNING["status"] = True
 
-    content = f"📊 今日选股报告\n\n"
-    content += f"🔥 短期爆发:\n"
-    for sp in portfolio.short_term:
-        content += f"  {sp.code} {sp.name} 评分{sp.score}\n"
-    content += f"\n📈 中期趋势:\n"
-    for sp in portfolio.medium_term:
-        content += f"  {sp.code} {sp.name} 评分{sp.score}\n"
-    content += f"\n🌳 长期持有:\n"
-    for sp in portfolio.long_term:
-        content += f"  {sp.code} {sp.name} 评分{sp.score}\n"
+    async def _background_scan_push():
+        try:
+            args = argparse.Namespace(push=False, time=None, mode="full", code="")
+            portfolio = await cmd_scan(args)
+            content = f"📊 今日选股报告\n\n"
+            if portfolio.short_term:
+                content += f"🔥 短期爆发:\n"
+                for sp in portfolio.short_term:
+                    content += f"  {sp.code} {sp.name} 评分{sp.score}\n"
+                content += "\n"
+            if portfolio.medium_term:
+                content += f"📈 中期趋势:\n"
+                for sp in portfolio.medium_term:
+                    content += f"  {sp.code} {sp.name} 评分{sp.score}\n"
+                content += "\n"
+            if portfolio.long_term:
+                content += f"🌳 长期持有:\n"
+                for sp in portfolio.long_term:
+                    content += f"  {sp.code} {sp.name} 评分{sp.score}\n"
+            try:
+                import json
+                ts_path = Path(__file__).parent.parent / "data_store" / "latest_trader_setups.json"
+                if ts_path.exists():
+                    ts = json.loads(ts_path.read_text())
+                    if ts:
+                        content += f"⚡ 短线猎手:\n"
+                        for s in ts[:4]:
+                            content += f"  {s.get('name','?')}({s['code']}) {s.get('score','?')}分 {s.get('entry_advice','')}\n"
+            except Exception:
+                pass
+            ok = dingtalk_push("📊 选股报告", content)
+            _write_progress("完成", 100, f"推送{'成功' if ok else '失败'}")
+        except Exception as e:
+            _write_progress("异常", 0, str(e)[:80])
+        finally:
+            SCAN_RUNNING["status"] = False
 
-    ok = dingtalk_push("📊 选股报告", content)
-    return RedirectResponse(url="/", status_code=303)
+    asyncio.create_task(_background_scan_push())
+    return JSONResponse({"status": "started"})
 
 
 

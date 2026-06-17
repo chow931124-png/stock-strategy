@@ -480,6 +480,26 @@ document.querySelectorAll('.scan-form').forEach(function(form) {
     });
 });
 
+// 钉钉推送按钮：后台扫描+推送，显示进度
+document.querySelector('form[action*=\'push-dingtalk\']').addEventListener('submit', function(e) {
+    e.preventDefault();
+    var btn = this.querySelector('button');
+    var progress = document.getElementById('scan-progress');
+    if (!progress) return;
+    progress.style.display = 'block';
+    document.getElementById('progress-bar').style.width = '5%';
+    document.getElementById('progress-step').textContent = '全量扫描+推送钉钉...';
+    document.getElementById('progress-pct').textContent = '5%';
+    btn.disabled = true;
+    btn.textContent = '⏳';
+    fetch('/api/push-dingtalk', {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}})
+    .then(function(r){return r.json()}).then(function(d) {
+        if (d.status === 'started') {
+            if (window.startPolling) startPolling();
+        }
+    });
+});
+
 function startPolling() {
     if (scanPollTimer) clearInterval(scanPollTimer);
     scanPollTimer = setInterval(function() {
