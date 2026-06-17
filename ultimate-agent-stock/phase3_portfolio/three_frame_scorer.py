@@ -116,6 +116,38 @@ class ThreeFrameScorer:
         except Exception:
             pass
 
+        # ★ 大市值趋势股独立通道（市值>300亿+趋势向上+量价健康）
+        # 这些股在短线框架里被市值惩罚压分，但中期趋势明确，值得推荐
+        try:
+            existing_codes = {s["code"] for s in short_picks + med_picks + long_picks}
+            large_trend = []
+            for s in all_scored:
+                code = s["code"]
+                if code in existing_codes:
+                    continue
+                mcap = s.get("mcap", 0)
+                trend = s.get("trend", 0)
+                volume = s.get("volume", 0)
+                if mcap >= 300 and trend >= 60 and volume >= 45:
+                    # 综合评分：趋势+量价+情绪，不加市值惩罚
+                    channel_score = trend * 0.40 + volume * 0.30 + s.get("sentiment", 50) * 0.20
+                    large_trend.append((channel_score, code, s))
+            if large_trend:
+                large_trend.sort(key=lambda x: -x[0])
+                print(f"     🏢 大市值趋势通道: {len(large_trend)} 只候选")
+                added = 0
+                for score, code, s in large_trend:
+                    if added >= 2:
+                        break
+                    # 只进中期推荐
+                    s["_channel"] = "large_trend"
+                    s["_channel_score"] = int(score)
+                    med_picks.append(s)
+                    added += 1
+                    print(f"       + {s.get('name','')}({code}) 趋势{int(s.get('trend',0))} 通道分{int(score)}")
+        except Exception:
+            pass
+
         # 冲突处理（同一只股票只进一个框架）
         short_final, med_final, long_final = self._resolve(
             short_picks, med_picks, long_picks, all_scored
@@ -172,14 +204,14 @@ class ThreeFrameScorer:
         # ★ Price In 检测：涨太多要扣分（预期已被定价）
         if len(closes) >= 20:
             ret_20d = (closes[-1] - closes[-20]) / closes[-20] * 100
-            if ret_20d > 25:
-                trend -= 25  # 20天涨超25%→跑太快了
-            elif ret_20d > 15:
-                trend -= 10
+            if ret_20d > 40:
+                trend -= 20  # 20天涨超40%→预期透支
+            elif ret_20d > 25:
+                trend -= 8   # 涨超25%→轻微透支
             elif ret_20d < -10:
                 trend -= 10  # 跌太多趋势已破
-            # 最佳区间：3-10%，说明有动量但没过热
-            if 3 <= ret_20d <= 10:
+            # 最佳区间：3-15%，动量充足且未过热
+            if 3 <= ret_20d <= 15:
                 trend += 10
 
         # ★ 时间衰减：近期涨跌权重 > 远期
@@ -519,9 +551,10 @@ class ThreeFrameScorer:
     def _to_pick(self, s, frame):
         sk = {"short_term": "short_score", "medium_term": "med_score", "long_term": "long_score"}
         score_key = sk.get(frame, "short_score")
+        channel_tag = " 🏢大市值趋势" if s.get("_channel") == "large_trend" else ""
         sp = StockPick(
             code=s["code"], name=s.get("name", ""),
-            reason=self._reason(s, frame),
+            reason=self._reason(s, frame) + channel_tag,
             confidence=min(1.0, s.get(score_key, 50) / 100),
             score=s.get(score_key, 50),
             score_by_analyst={
