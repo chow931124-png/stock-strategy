@@ -102,6 +102,77 @@ class ThreeFrameScorer:
         except Exception:
             pass
 
+        # ★ 海外映射因子：NVDA/AVGO隔夜涨跌 → 对应产业链环节A股标的涨跌
+        try:
+            from data.us_market import fetch_us_market_close
+            us_data = fetch_us_market_close()
+            nvda_chg = us_data.get("nvda_change", 0) or 0
+            avgo_chg = us_data.get("avgo_change", 0) or 0
+            if nvda_chg or avgo_chg:
+                # 构建股票→美股映射表（从产业链图谱读取）
+                from data.ai_chain import build_ai_chain
+                chain_nodes = build_ai_chain()
+                stock_us_map = {}  # {code: [(us_ticker, chain_bottleneck), ...]}
+                for n in chain_nodes.values():
+                    for s in n.key_stocks:
+                        for us in n.us_mapping:
+                            stock_us_map.setdefault(s, []).append((us.upper(), n.bottleneck_score))
+
+                if stock_us_map:
+                    for s in all_scored:
+                        code = s.get("code", "")
+                        mappings = stock_us_map.get(code, [])
+                        boost = 0
+                        for us_ticker, bscore in mappings:
+                            us_chg = 0
+                            if us_ticker == "NVDA":
+                                us_chg = nvda_chg
+                            elif us_ticker == "AVGO":
+                                us_chg = avgo_chg
+                            # 映射强度：核心瓶颈环节(NVDA直接映射)加成更大
+                            if us_ticker == "NVDA" and bscore >= 4:
+                                boost += us_chg * 3
+                            elif us_ticker == "NVDA":
+                                boost += us_chg * 2
+                            else:
+                                boost += us_chg * 1.5
+                        if boost != 0:
+                            boost = max(-15, min(15, int(boost)))
+                            s["raw_short"] = max(0, s["raw_short"] + boost)
+                            s["raw_med"] = max(0, s["raw_med"] + boost)
+                            s["overseas_boost"] = boost
+        except Exception:
+            pass
+
+        # ★ 产业链卡位因子：属于核心卡位环节的股票加分
+        try:
+            from data.ai_chain import score_stock_in_chain
+            for s in all_scored:
+                code = s.get("code", "")
+                chain = score_stock_in_chain(code)
+                if chain.get("in_chain"):
+                    bscore = chain.get("max_bottleneck", 0)
+                    composite = chain.get("composite", 0)
+                    cboost = 0
+                    # 卡位评分越高加分越多
+                    if bscore >= 5:
+                        cboost = 15  # 命门级卡位
+                    elif bscore >= 4:
+                        cboost = 10  # 核心卡位
+                    elif bscore >= 3:
+                        cboost = 5   # 关键环节
+                    # 综合评分补充
+                    if composite >= 4.0:
+                        cboost += 5
+                    elif composite >= 3.5:
+                        cboost += 3
+                    if cboost > 0:
+                        s["raw_short"] = max(0, s["raw_short"] + cboost)
+                        s["raw_med"] = max(0, s["raw_med"] + cboost)
+                        s["chain_boost"] = cboost
+        except Exception:
+            pass
+
         # ★ 历史表现惩罚：推过的票如果表现差，再出现时扣分
         try:
             from self_learn.signal_tracker import get_stock_track_record
