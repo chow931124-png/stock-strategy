@@ -435,6 +435,19 @@
 <script>
 // ── 扫描进度轮询 ──
 let scanPollTimer = null;
+// 页面加载时检查是否有扫描在后台运行
+(function() {
+    var pp = document.getElementById('scan-progress');
+    if (pp) {
+        fetch('/api/scan-progress').then(function(r){return r.json()}).then(function(d) {
+            if (d.running) {
+                pp.style.display = 'block';
+                startPolling();
+            }
+        }).catch(function(){});
+    }
+})();
+
 document.querySelectorAll('.scan-form').forEach(function(form) {
     form.addEventListener('submit', function(e) {
         e.preventDefault();
@@ -453,36 +466,44 @@ document.querySelectorAll('.scan-form').forEach(function(form) {
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
             body: 'mode='+encodeURIComponent(mode)
         }).then(function(r) {
-            if (r.ok) window.location.href = '/';
+            if (!r.ok) {
+                btn.disabled = false;
+                var labels = {'auto':'🔍 全量','fast':'⚡ 快扫','close':'🟢 尾盘','scan':'📊 复盘'};
+                btn.textContent = labels[mode]||'🔍 全量';
+            }
         }).catch(function(e) {
             btn.disabled = false;
-            btn.textContent = {'auto':'🔍全量','fast':'⚡快扫','close':'🟢尾盘','scan':'📊复盘'}[mode]||'🔍全量';
+            var labels = {'auto':'🔍 全量','fast':'⚡ 快扫','close':'🟢 尾盘','scan':'📊 复盘'};
+            btn.textContent = labels[mode]||'🔍 全量';
         });
-        if (scanPollTimer) clearInterval(scanPollTimer);
-        scanPollTimer = setInterval(function() {
-            fetch('/api/scan-progress').then(function(r){return r.json()}).then(function(d) {
-                if (d.step) document.getElementById('progress-step').textContent = d.step;
-                if (d.pct >= 0) {
-                    document.getElementById('progress-bar').style.width = Math.min(100, d.pct)+'%';
-                    document.getElementById('progress-pct').textContent = d.pct+'%';
-                }
-                if (d.detail) document.getElementById('progress-detail').textContent = d.detail;
-                if (!d.running) {
-                    clearInterval(scanPollTimer);
-                    scanPollTimer = null;
-                    if (d.done) {
-                        document.getElementById('progress-step').textContent = '完成 ✓';
-                        document.getElementById('progress-bar').style.width = '100%';
-                        setTimeout(function(){ progress.style.display = 'none'; }, 3000);
-                    }
-                    btn.disabled = false;
-                    var labels = {'auto':'🔍 全量','fast':'⚡ 快扫','close':'🟢 尾盘','scan':'📊 复盘'};
-                    btn.textContent = labels[mode]||'🔍 全量';
-                }
-            }).catch(function(){});
-        }, 1000);
+        startPolling();
     });
 });
+
+function startPolling() {
+    if (scanPollTimer) clearInterval(scanPollTimer);
+    scanPollTimer = setInterval(function() {
+        fetch('/api/scan-progress').then(function(r){return r.json()}).then(function(d) {
+            if (d.step) document.getElementById('progress-step').textContent = d.step;
+            if (d.pct >= 0) {
+                document.getElementById('progress-bar').style.width = Math.min(100, d.pct)+'%';
+                document.getElementById('progress-pct').textContent = d.pct+'%';
+            }
+            if (d.detail) document.getElementById('progress-detail').textContent = d.detail;
+            if (!d.running && d.done) {
+                clearInterval(scanPollTimer);
+                scanPollTimer = null;
+                document.getElementById('progress-step').textContent = '完成 ✓';
+                document.getElementById('progress-bar').style.width = '100%';
+                setTimeout(function(){ window.location.href = '/'; }, 1500);
+            } else if (!d.running && !d.done) {
+                /* idle state, stop polling */
+                clearInterval(scanPollTimer);
+                scanPollTimer = null;
+            }
+        }).catch(function(){});
+    }, 1000);
+}
 </script>
 
 {% endblock %}

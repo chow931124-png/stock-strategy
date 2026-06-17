@@ -354,21 +354,32 @@ async def run_scan(request: Request):
     from main import cmd_scan
     import argparse
 
-    # 读取前端选择的模式
+    if SCAN_RUNNING["status"]:
+        return JSONResponse({"error": "扫描已在运行中"}, status_code=429)
+
     form = await request.form()
     mode = form.get("mode", "auto")
 
     _write_progress("初始化", 0, "准备启动扫描...")
     SCAN_RUNNING["status"] = True
+    SCAN_RUNNING["task_id"] = None
 
     args = argparse.Namespace(push=False, time=None, mode=mode, code="")
-    try:
-        portfolio = await cmd_scan(args)
-    finally:
-        _write_progress("完成", 100, "")
-        SCAN_RUNNING["status"] = False
 
-    return RedirectResponse(url="/", status_code=303)
+    async def _background_scan():
+        """后台执行扫描，不阻塞web"""
+        try:
+            await cmd_scan(args)
+        except Exception as e:
+            _write_progress("异常", 0, str(e)[:80])
+        finally:
+            _write_progress("完成", 100, "")
+            SCAN_RUNNING["status"] = False
+
+    # 在后台启动，不等待
+    asyncio.create_task(_background_scan())
+
+    return JSONResponse({"status": "started", "mode": mode})
 
 
 @app.get("/api/scan-progress")
