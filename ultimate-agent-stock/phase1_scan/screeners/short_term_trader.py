@@ -515,7 +515,8 @@ class ShortTermTrader(BaseScreener):
             temp_adj = -5  # 火热：放宽
 
         min_score = 48 + temp_adj
-        eligible = [s for s in scored if s["final_score"] >= min_score]
+        # 硬门槛：题材P<30的一票否决（短线逻辑=明天有人接力，没题材没人接力）
+        eligible = [s for s in scored if s["final_score"] >= min_score and s.get("theme_pct", 0) >= 30]
 
         if not eligible:
             # 分数普遍低但有候选，至少给1只最好的
