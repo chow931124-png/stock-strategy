@@ -882,7 +882,80 @@ def get_yesterday_tracking() -> list:
 # 模块4：三层个股信号（复用v2.0逻辑）
 # ════════════════════════════════════════════════════════
 class StockScorer:
-    """个股三层评分"""
+    """个股三层评分 + AI产业链加分"""
+
+    # ═══ AI产业链逆向映射：code → (节点名, 层级, 综合分) ═══
+    # 综合分 = 卡位×0.35 + 独占×0.25 + 势头×0.25 + 国产替代×0.15
+    # chain_boost = 综合分×4 (0-20分), 加到 final_sort
+    CHAIN_MAP = {
+        # ── Layer 0: 基础原材料 ──
+        # 硅片/衬底 (3.5)
+        "688126": ("硅片/衬底", 0, 3.5), "600703": ("硅片/衬底", 0, 3.5),
+        # 电子特气 (3.0)
+        "300346": ("电子特气", 0, 3.0),
+        # 电子布/玻纤 (3.2)
+        "600176": ("电子布/玻纤", 0, 3.2),
+        # 覆铜板/CCL (3.2)
+        "603002": ("覆铜板/CCL", 0, 3.2), "600183": ("覆铜板/CCL", 0, 3.2),
+        # 战略金属/稀土 (3.55)
+        "600010": ("战略金属/稀土", 0, 3.55), "000970": ("战略金属/稀土", 0, 3.55),
+        "002056": ("战略金属/稀土", 0, 3.55),
+        "000657": ("战略金属/稀土", 0, 3.55), "002378": ("战略金属/稀土", 0, 3.55),
+        "603993": ("战略金属/稀土", 0, 3.55), "601958": ("战略金属/稀土", 0, 3.55),
+        "002155": ("战略金属/稀土", 0, 3.55), "002428": ("战略金属/稀土", 0, 3.55),
+        "601899": ("战略金属/稀土", 0, 3.55), "601600": ("战略金属/稀土", 0, 3.55),
+        "000630": ("战略金属/稀土", 0, 3.55), "601168": ("战略金属/稀土", 0, 3.55),
+        "000603": ("战略金属/稀土", 0, 3.55),
+        "600497": ("战略金属/稀土", 0, 3.55), "600711": ("战略金属/稀土", 0, 3.55),
+        "000960": ("战略金属/稀土", 0, 3.55), "600531": ("战略金属/稀土", 0, 3.55),
+        "000426": ("战略金属/稀土", 0, 3.55),
+
+        # ── Layer 1: 芯片设计/制造 ──
+        # AI芯片/GPU (5.0) — 产业链最核心卡点
+        "688041": ("AI芯片/GPU", 1, 5.0), "688256": ("AI芯片/GPU", 1, 5.0),
+        # 存储芯片 (4.25)
+        "002049": ("存储芯片", 1, 4.25), "603986": ("存储芯片", 1, 4.25),
+        "688525": ("存储芯片", 1, 4.25),
+        # 模拟芯片 (3.65)
+        "688798": ("模拟芯片", 1, 3.65), "603501": ("模拟芯片", 1, 3.65),
+        # 先进封装 (3.75)
+        "688012": ("先进封装", 1, 3.75), "002156": ("先进封装", 1, 3.75),
+        "603005": ("先进封装", 1, 3.75),
+
+        # ── Layer 2: 核心元器件 ──
+        # 光模块 (3.95)
+        "300308": ("光模块", 2, 3.95), "300502": ("光模块", 2, 3.95),
+        "300394": ("光模块", 2, 3.95), "688313": ("光模块", 2, 3.95),
+        # PCB (3.55)
+        "002916": ("PCB", 2, 3.55), "002463": ("PCB", 2, 3.55),
+        "603228": ("PCB", 2, 3.55), "002579": ("PCB", 2, 3.55),
+        "002384": ("PCB", 2, 3.55),
+        # 连接器 (3.1)
+        "002475": ("连接器", 2, 3.1), "300570": ("连接器", 2, 3.1),
+        "601137": ("连接器", 2, 3.1),
+        # 封测材料 (3.4)
+        "002409": ("封测材料", 2, 3.4), "300236": ("封测材料", 2, 3.4),
+        "300604": ("封测材料", 2, 3.4),
+        # MLCC (3.5)
+        "300408": ("MLCC", 2, 3.5), "000636": ("MLCC", 2, 3.5),
+        # 光芯片 (4.15)
+        "688498": ("光芯片", 2, 4.15), "300548": ("光芯片", 2, 4.15),
+
+        # ── Layer 3: 算力基础设施 ──
+        # AI服务器 (3.25)
+        "601138": ("AI服务器", 3, 3.25), "000977": ("AI服务器", 3, 3.25),
+        # 液冷散热 (3.6)
+        "603105": ("液冷散热", 3, 3.6), "600481": ("液冷散热", 3, 3.6),
+        "688408": ("液冷散热", 3, 3.6),
+        # 算力电力 (3.45)
+        "600089": ("算力电力", 3, 3.45), "600406": ("算力电力", 3, 3.45),
+        "601567": ("算力电力", 3, 3.45),
+
+        # ── Layer 4: AI应用 ──
+        # 机器人 (2.65)
+        "688017": ("机器人", 4, 2.65), "603728": ("机器人", 4, 2.65),
+        "002050": ("机器人", 4, 2.65),
+    }
 
     def check_base(self, row: pd.Series) -> bool:
         cfg = STRATEGY['base']
@@ -1104,6 +1177,17 @@ class StockScorer:
         score = min(score, 100)
         return {"short_score": score, "short_reasons": "|".join(reasons[:3]) if reasons else ""}
 
+    def calc_chain_boost(self, code: str) -> tuple:
+        """AI产业链加分：判断股票是否属于关键产业链环节
+        Returns (chain_name, layer, boost_points)
+        """
+        if code in self.CHAIN_MAP:
+            name, layer, comp = self.CHAIN_MAP[code]
+            # 综合分0-5 → 加分0-20分
+            boost = int(comp * 4)
+            return (name, layer, boost)
+        return ("", -1, 0)
+
     def calc_kelly_position(self, row: pd.Series, tier_score: int) -> float:
         """
         凯利公式计算仓位比例
@@ -1182,8 +1266,8 @@ class StockScorer:
             "green": green,
         }
 
-    def score(self, row: pd.Series, sector_score: int) -> dict:
-        """返回个股评分 + 综合评分"""
+    def score(self, row: pd.Series, sector_score: int, code: str = "") -> dict:
+        """返回个股评分 + 综合评分（含AI产业链加分）"""
         levels = []
         elite = self.check_elite(row)
         enhanced = self.check_enhanced(row)
@@ -1214,6 +1298,10 @@ class StockScorer:
         green_lights = verify.get("green", 0)
         ambush = self.calc_ambush(row, sector_score)
 
+        # AI产业链加分：卡位越核心，加分越多（0-20分）
+        chain_name, chain_layer, chain_boost = self.calc_chain_boost(code)
+        chain_tag = f"🤖{chain_name}" if chain_name else ""
+
         # ATR动态止损：止损 = ATR × 2, 范围 5%-15%
         atr_val = row.get('atr_ratio', None)
         if pd.notna(atr_val) and atr_val > 0:
@@ -1222,11 +1310,12 @@ class StockScorer:
             atr_stop = 0.08  # 默认 -8%
 
         final_sort = int(
-            composite * 0.35
-            + surge_sc * 0.20
-            + green_lights * 10 * 0.20      # 3灯×10=30分，权重20%
-            + sector_score * 0.15
+            composite * 0.30
+            + surge_sc * 0.18
+            + green_lights * 10 * 0.18      # 3灯×10=30分，权重18%
+            + sector_score * 0.12
             + ambush * 0.10
+            + chain_boost * 0.12            # 产业链加分，权重12%
         )
 
         return {
@@ -1242,6 +1331,9 @@ class StockScorer:
             "short_term": self.calc_short_term(row, sector_score),
             "final_sort": final_sort,
             "atr_stop_pct": atr_stop,
+            "chain_boost": chain_boost,
+            "chain_name": chain_name,
+            "chain_tag": chain_tag,
         }
 
 
@@ -2005,10 +2097,9 @@ def main():
             print(f"    [板块] {code} {quote.get('name','')}: {sector} (来源:{src})")
 
         sec_score = sector_scores.get(sector, 50)
-        score_result = stock_scorer.score(row, sec_score)
+        score_result = stock_scorer.score(row, sec_score, code)
 
         # 记录所有扫描过的股票（用于突破观察）
-        # 有信号时直接从score_result取short_term，避免重复计算calc_short_term
         if score_result:
             short_term = score_result.get("short_term", {})
             short_score = short_term.get("short_score", 0)
@@ -2056,6 +2147,8 @@ def main():
                 "ma_spread": row.get("ma_spread", 0),
                 "final_sort": score_result.get("final_sort", 0),
                 "atr_stop_pct": score_result.get("atr_stop_pct", 0.08),
+                "chain_boost": score_result.get("chain_boost", 0),
+                "chain_name": score_result.get("chain_name", ""),
             })
 
         if not args.quiet:
@@ -2158,9 +2251,10 @@ def main():
         print(f"  {tier_name}: {len(tier_results)} 个")
         for r in tier_results:
             sector_tag = f"[{r['sector']}]({r['sector_score']}分)" if r['sector'] else ""
+            chain_tag = f" {r.get('chain_tag','')}" if r.get('chain_name') else ""
             v = r.get("verify", {})
             v_tag = f" {v.get('level','')} {v.get('lights','')}" if v else ""
-            print(f"    {v_tag} {r['name']}({r['code']}) {sector_tag} "
+            print(f"    {v_tag} {r['name']}({r['code']}) {sector_tag}{chain_tag} "
                   f"¥{r['price']:.2f} 回撤{r['drawdown']:+.0f}% "
                   f"综合{r['composite']}分")
         print()
@@ -2259,8 +2353,7 @@ def main():
             wins = sum(1 for t in tracking if t["is_win"])
             total = len(tracking)
             avg_ret = sum(t["change_pct"] for t in tracking) / total
-            _yesterday = (datetime.now() - timedelta(days=1)).strftime("%m/%d")
-            print(f"\n📊 昨日信号追踪（{_yesterday}）:")
+            print(f"\n📊 昨日信号追踪（{yesterday}）:")
             print(f"{'信号':25s} {'推时价':>8s} {'现价':>8s} {'涨跌':>8s} {'盈亏':>6s} {'仓位':>6s}")
             print("-" * 65)
             for t in tracking:
