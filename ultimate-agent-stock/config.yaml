@@ -68,10 +68,9 @@ scoring:
       volume: 0.30
       sentiment: 0.25
       divergence: 0.10
-    mcap_penalty: 10        # 大盘股扣分阀值(亿)和分
-    min_score: 55
-    max_stocks: 2
-    # 因子原始值取自 _compute_dimensions 中的 trend/volume/sentiment/divergence_adj
+    mcap_penalty: 10
+    min_score: 50
+    max_stocks: 4
 
   medium_term:
     factors:
@@ -80,18 +79,8 @@ scoring:
       sentiment: 0.20
       fund: 0.20
       divergence: 0.15
-    min_score: 55
-    max_stocks: 3
-
-  long_term:
-    factors:
-      fund: 0.40
-      trend: 0.15
-      volume: 0.10
-      sentiment: 0.10
-    market_cap_weight: 0.25
-    min_score: 60
-    max_stocks: 1
+    min_score: 50
+    max_stocks: 4
 
 # ── 风险管理 ──────────────────────────────────────
 risk:

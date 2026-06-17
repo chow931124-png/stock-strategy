@@ -25,7 +25,7 @@ class ThreeFrameScorer:
         cfg = get_config().get("scoring", {})
         self.short_cfg = cfg.get("short_term", {})
         self.med_cfg = cfg.get("medium_term", {})
-        self.long_cfg = cfg.get("long_term", {})
+        self.long_cfg = cfg.get("long_term", {"max_stocks": 0})
 
     def score_all(self, candidates, market_context, intel_context=None,
                   screener_results=None, pre_quotes=None, hot_themes=None,
