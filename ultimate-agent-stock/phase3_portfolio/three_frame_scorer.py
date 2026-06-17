@@ -76,6 +76,32 @@ class ThreeFrameScorer:
         med_picks = self._filter_medium(all_scored, intel, market_context)
         long_picks = self._filter_long(all_scored, intel, market_context)
 
+        # ★ 跨日去重：排除昨天推荐过的股票（避免重复推）
+        try:
+            from pathlib import Path
+            prev_codes = set()
+            # 从三框架结果读取
+            prev_file = Path(__file__).parents[1] / "data_store" / "latest_portfolio.json"
+            if prev_file.exists():
+                import json
+                prev = json.loads(prev_file.read_text())
+                for key in ["short_term", "medium_term", "long_term"]:
+                    for s in prev.get(key, []):
+                        prev_codes.add(s.get("code", ""))
+            # 从短线猎手结果读取
+            ts_file = Path(__file__).parents[1] / "data_store" / "latest_trader_setups.json"
+            if ts_file.exists():
+                import json
+                ts = json.loads(ts_file.read_text())
+                for s in ts:
+                    prev_codes.add(s.get("code", ""))
+            if prev_codes:
+                    short_picks = [s for s in short_picks if s["code"] not in prev_codes]
+                    med_picks = [s for s in med_picks if s["code"] not in prev_codes]
+                    long_picks = [s for s in long_picks if s["code"] not in prev_codes]
+        except Exception:
+            pass
+
         # 冲突处理（同一只股票只进一个框架）
         short_final, med_final, long_final = self._resolve(
             short_picks, med_picks, long_picks, all_scored

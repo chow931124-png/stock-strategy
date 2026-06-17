@@ -126,7 +126,27 @@ class ShortTermTrader(BaseScreener):
         if not all_scored:
             return []
 
-        # ───── 第5阶段：动态选取 ─────
+        # ───── 第5阶段：跨日去重 ─────
+        try:
+            prev_codes = set()
+            pf = Path(__file__).parents[2] / "data_store" / "latest_portfolio.json"
+            if pf.exists():
+                import json
+                p = json.loads(pf.read_text())
+                for k in ["short_term", "medium_term", "long_term"]:
+                    for s in p.get(k, []):
+                        prev_codes.add(s.get("code", ""))
+            tf = Path(__file__).parents[2] / "data_store" / "latest_trader_setups.json"
+            if tf.exists():
+                t = json.loads(tf.read_text())
+                for s in t:
+                    prev_codes.add(s.get("code", ""))
+            if prev_codes:
+                all_scored = [s for s in all_scored if s["code"] not in prev_codes]
+        except Exception:
+            pass
+
+        # ───── 第6阶段：动态选取 ─────
         all_scored.sort(key=lambda x: -x["final_score"])
         final = self._select_dynamic(all_scored, temp)
 
