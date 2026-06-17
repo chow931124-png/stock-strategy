@@ -9,6 +9,7 @@
 全市场约 4000 只 → 过滤后约 500-800 只候选
 """
 import os
+import random
 import requests
 from typing import Optional
 from data.reference_data import is_excluded_board
@@ -122,7 +123,8 @@ def scan_full_market(min_price: float = 5.0,
         if len(candidates_6digit) >= max_stocks * 2:
             break
 
-    # 去重 + 截断
+    # 去重 + 随机打乱（消除代码段顺序导致的选择偏差）
     candidates_6digit = list(dict.fromkeys(candidates_6digit))
+    random.shuffle(candidates_6digit)
     print(f"    过滤后: {len(candidates_6digit)} 只")
     return candidates_6digit[:max_stocks]
