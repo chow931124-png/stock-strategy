@@ -60,17 +60,21 @@ class ShortTermTrader(BaseScreener):
         if regime == "BEAR" and temp < 30:
             return []
 
-        # 非交易日检查
+        # 非交易日检查（fast模式不依赖tick，跳过此检查）
         now = datetime.now()
-        if now.hour > 15 or (now.hour == 15 and now.minute >= 30):
+        if mode != "fast" and (now.hour > 15 or (now.hour == 15 and now.minute >= 30)):
             test_tick = analyze_tick("600519")
             if not test_tick:
                 print(f"     [跳过] 非交易日")
                 return []
 
-        # 获取环境数据
+        # 获取环境数据（fast模式跳过龙虎榜，省一次东财调用）
         hot_themes, hot_codes = self._get_hot_themes()
-        tiger = daily_dragon_tiger()
+        if mode != "fast":
+            tiger = daily_dragon_tiger()
+            tiger_map = {s.get("code"): s for s in tiger.get("stocks", []) if s.get("code")}
+        else:
+            tiger_map = {}
         tiger_map = {}
         for s in tiger.get("stocks", []):
             c = s.get("code", "")
@@ -103,8 +107,10 @@ class ShortTermTrader(BaseScreener):
         self._rank_percentiles(all_scored)
 
         # ───── 第3阶段：自适应权重 + 最终分 ─────
-        # 权重随市场状态变化
-        if regime == "BULL":
+        # fast模式不走资金维度（没tick/龙虎榜/资金流），重新平衡
+        if mode == "fast":
+            w_t, w_f, w_tech = 0.55, 0.00, 0.45   # 快扫只看题材+技术
+        elif regime == "BULL":
             w_t, w_f, w_tech = 0.25, 0.30, 0.45   # 牛市重技术，题材溢价低
         elif regime == "BEAR":
             w_t, w_f, w_tech = 0.50, 0.35, 0.15   # 熊市重题材（抱团取暖），技术不可靠
@@ -187,6 +193,7 @@ class ShortTermTrader(BaseScreener):
         open_p = quote.get("open", 0)
         last_close = quote.get("last_close", 0)
         limit_up = quote.get("limit_up", 0)
+        limit_down = quote.get("limit_down", 0)
         amplitude = quote.get("amplitude_pct", 0)
 
         if price <= 0:
@@ -243,21 +250,29 @@ class ShortTermTrader(BaseScreener):
             if volumes[-1] < volumes[-2] * 0.7:
                 shrinking_vol = True
 
-        # ── 逐笔 ──
-        tick = analyze_tick(code)
-        has_tick = bool(tick)
-        if tick:
-            self.data_status["tick"] = True
+        # ── 涨停/跌停检测 ──
+        is_limit_up = limit_up > 0 and current >= limit_up * 0.995
+        is_limit_down = limit_down > 0 and current <= limit_down * 1.005
+        hit_limit_up = is_limit_up and abs(chg_1d) >= 9.0  # 真涨停（涨幅达标）
+
+        # ── 逐笔（fast模式跳过tick，省15-30秒） ──
+        tick = None
+        has_tick = False
+        if mode != "fast":
+            tick = analyze_tick(code)
+            has_tick = bool(tick)
+            if tick:
+                self.data_status["tick"] = True
         big_net = tick.get("big_net", 0) if tick else 0
         last30_dir = tick.get("last30_dir", "neutral") if tick else "neutral"
         last30_big_net = tick.get("last30_big_net", 0) if tick else 0
         suspicious = tick.get("suspicious", []) if tick else []
 
-        # ── 龙虎榜详情 ──
-        tiger_info = tiger_map.get(code, {})
+        # ── 龙虎榜详情（fast模式跳过，没有tiger_map） ──
+        tiger_info = tiger_map.get(code, {}) if tiger_map else {}
         tiger_net = tiger_info.get("net_buy", 0) if tiger_info else 0
 
-        # ── 资金流（fast模式跳过，省时间） ──
+        # ── 资金流（fast模式跳过，省15分钟） ──
         flow = stock_fund_flow_120d(code) if mode != "fast" else None
         net_3d = 0
         if flow and len(flow) >= 3:
@@ -295,6 +310,9 @@ class ShortTermTrader(BaseScreener):
             "consec_limit_ups": consec_limit,
             "shrinking_vol": shrinking_vol,
             "ma20": round(ma20, 2),
+            # 涨停/跌停
+            "hit_limit_up": hit_limit_up,
+            "is_limit_down": is_limit_down,
             # 否决用
             "suspicious": suspicious,
             # 止损
@@ -321,15 +339,20 @@ class ShortTermTrader(BaseScreener):
                 s["tech_score"] = 50
             return
 
-        # ── 题材分：基于是否在热点+同花顺热度 ──
-        raw_theme = [(
-            50  # 基础
-            + (25 if s["in_hot_code"] else 0)
-        ) for s in scored]
-        theme_arr = np.array(raw_theme)
+        # ── 题材分：基于是否在热点+同花顺热度+涨停强度 ──
+        raw_theme = []
         for s in scored:
-            raw = 50 + (25 if s["in_hot_code"] else 0)
-            s["theme_score"] = int(np.sum(theme_arr <= raw) / n * 100)
+            raw = 50  # 基础
+            if s["in_hot_code"]:
+                raw += 25  # 同花顺热点
+            if s.get("hit_limit_up"):
+                raw += 15  # 涨停板
+            if s.get("consec_limit_ups", 0) >= 2:
+                raw += 10  # 连板溢价
+            raw_theme.append(raw)
+        theme_arr = np.array(raw_theme)
+        for i, s in enumerate(scored):
+            s["theme_score"] = int(np.sum(theme_arr <= raw_theme[i]) / n * 100)
 
         # ── 资金分：基于大单净额+龙虎榜+资金流+尾盘方向 ──
         raw_fund = []
@@ -464,6 +487,10 @@ class ShortTermTrader(BaseScreener):
             pct_below = (s["ma20"] - s["price"]) / s["ma20"] * 100
             if pct_below > 5:
                 reasons.append(f"跌破MA20({pct_below:.0f}%)")
+
+        # ⑦ 跌停板：今天跌停的不要
+        if s.get("is_limit_down"):
+            reasons.append("跌停")
 
         if reasons:
             s["veto_reason"] = "|".join(reasons[:3])
