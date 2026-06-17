@@ -636,6 +636,9 @@ class ThreeFrameScorer:
             },
             last_close=s.get("last_close"), current_price=s.get("price"), change_pct=s.get("change_pct"),
         )
+        # 传递海外映射和产业链卡位信息给web展示
+        sp.overseas_boost = s.get("overseas_boost", 0)
+        sp.chain_boost = s.get("chain_boost", 0)
 
         if frame == "short_term" and s.get("price", 0) > 0:
             p = s["price"]

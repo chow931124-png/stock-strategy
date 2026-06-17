@@ -342,11 +342,13 @@
                     </div>
                     {% endif %}
                     {% if sp.reason %}<div style="margin-top:4px;">{% for tag in sp.reason.split(' ') %}{% if tag %}<span class="tag tag-orange" style="font-size:8px;padding:1px 5px;">{{ tag }}</span> {% endif %}{% endfor %}</div>{% endif %}
-                    {% if sp.get("overseas_boost", 0) != 0 %}
-                    <span style="font-size:8px;background:rgba(59,130,246,0.1);color:#60a5fa;border-radius:4px;padding:1px 5px;">🇺🇸 {{ "%.0f"|format(sp.overseas_boost) }}{{ "+" if sp.overseas_boost > 0 }}</span>
+                    {% set ob = sp.overseas_boost|default(0) %}
+                    {% if ob != 0 %}
+                    <span style="font-size:8px;background:rgba(59,130,246,0.1);color:#60a5fa;border-radius:4px;padding:1px 5px;">🇺🇸 {{ "%.0f"|format(ob) }}{{ "+" if ob > 0 }}</span>
                     {% endif %}
-                    {% if sp.get("chain_boost", 0) > 0 %}
-                    <span style="font-size:8px;background:rgba(168,85,247,0.1);color:#a855f7;border-radius:4px;padding:1px 5px;">🔗 +{{ sp.chain_boost }}</span>
+                    {% set cb = sp.chain_boost|default(0) %}
+                    {% if cb > 0 %}
+                    <span style="font-size:8px;background:rgba(168,85,247,0.1);color:#a855f7;border-radius:4px;padding:1px 5px;">🔗 +{{ cb }}</span>
                     {% endif %}
                     {% if analyst_reports and sp.code in analyst_reports %}
                     <div style="margin-top:6px;">
