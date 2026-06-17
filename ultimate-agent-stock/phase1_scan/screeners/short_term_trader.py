@@ -146,6 +146,19 @@ class ShortTermTrader(BaseScreener):
         except Exception:
             pass
 
+        # ───── 历史表现惩罚：推过的票如果表现差，再出现时扣分 ─────
+        try:
+            from self_learn.signal_tracker import get_stock_track_record
+            track = get_stock_track_record(days=60)
+            if track:
+                for s in all_scored:
+                    t = track.get(s["code"])
+                    if t and t["avg_return"] < -5 and t["times"] >= 1:
+                        penalty = min(15, abs(int(t["avg_return"] * 1.5)))
+                        s["final_score"] = max(0, s["final_score"] - penalty)
+        except Exception:
+            pass
+
         # ───── 第6阶段：动态选取 ─────
         all_scored.sort(key=lambda x: -x["final_score"])
         final = self._select_dynamic(all_scored, temp)

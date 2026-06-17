@@ -102,6 +102,20 @@ class ThreeFrameScorer:
         except Exception:
             pass
 
+        # ★ 历史表现惩罚：推过的票如果表现差，再出现时扣分
+        try:
+            from self_learn.signal_tracker import get_stock_track_record
+            track = get_stock_track_record(days=60)
+            if track:
+                for s in all_scored:
+                    t = track.get(s["code"])
+                    if t and t["avg_return"] < -5 and t["times"] >= 1:
+                        penalty = min(20, abs(int(t["avg_return"] * 2)))
+                        s["raw_short"] = max(0, s["raw_short"] - penalty)
+                        s["raw_med"] = max(0, s["raw_med"] - penalty // 2)
+        except Exception:
+            pass
+
         # 冲突处理（同一只股票只进一个框架）
         short_final, med_final, long_final = self._resolve(
             short_picks, med_picks, long_picks, all_scored

@@ -176,6 +176,44 @@ def get_track_record(days: int = 30) -> dict:
     return result
 
 
+def get_stock_track_record(days: int = 30) -> dict:
+    """
+    查询最近 days 天内推荐过的股票及其平均收益率
+
+    返回:
+        {code: {"avg_return": 平均收益率, "times": 推荐次数, "wins": 盈利次数}}
+    """
+    conn = get_conn()
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    rows = conn.execute("""
+        SELECT code, return_pct FROM scan_records
+        WHERE date >= ? AND return_pct IS NOT NULL
+        ORDER BY date DESC
+    """, (cutoff,)).fetchall()
+    conn.close()
+
+    stats = {}
+    for r in rows:
+        code = r["code"]
+        ret = r["return_pct"]
+        if code not in stats:
+            stats[code] = {"returns": [], "times": 0, "wins": 0}
+        stats[code]["returns"].append(ret)
+        stats[code]["times"] += 1
+        if ret > 0:
+            stats[code]["wins"] += 1
+
+    result = {}
+    for code, s in stats.items():
+        avg_ret = sum(s["returns"]) / len(s["returns"])
+        result[code] = {
+            "avg_return": round(avg_ret, 2),
+            "times": s["times"],
+            "wins": s["wins"],
+        }
+    return result
+
+
 def print_track_record(days: int = 30):
     record = get_track_record(days)
     s = record["summary"]
