@@ -2337,12 +2337,13 @@ def main():
         if ambush_top and ambush_top[0].get('ambush_score', 0) >= 60:
             print(f"\n🚀 埋伏信号榜 TOP3（横盘突破候选）:")
             for r in ambush_top:
-                bar = "█" * (r['ambush_score'] // 10) + "░" * (10 - r['ambush_score'] // 10)
+                amb = r.get('ambush_score', 0)
+                bar = "█" * (amb // 10) + "░" * (10 - amb // 10)
                 amp_str = f"振幅{r.get('amplitude_60',0):.0f}%" if r.get('amplitude_60',0) else ""
                 spread_str = f"粘合{r.get('ma_spread',0):.1f}%" if r.get('ma_spread',0) else ""
                 print(f"  {bar} {r['name']}({r['code']}) [{r['sector']}] "
                       f"{amp_str} {spread_str} 量比{r['vol_ratio']:.1f}x "
-                      f"埋伏{r['ambush_score']}分")
+                      f"埋伏{amb}分")
             print(f"  📌 横盘充分+均线粘合+放量异动，有可能突破向上")
 
         avg_stop = sum(r.get('atr_stop_pct', 0.08) for r in results) / len(results) if results else 0.08
